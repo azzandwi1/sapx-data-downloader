@@ -270,7 +270,7 @@ def render_pickup_tab(username: str, password: str, pin: str) -> None:
     with date_col2:
         end_date = st.date_input("To", value=date.today(), key="pickup_to")
     with date_col3:
-        batch_days = st.number_input("Batch per berapa hari", min_value=1, value=7, step=1, key="pickup_batch_days")
+        batch_days = st.number_input("Batch per berapa hari", min_value=1, value=5, step=1, key="pickup_batch_days")
     with date_col4:
         export_kind = select_from_mapping(
             "Jenis Export",
@@ -391,7 +391,7 @@ def render_pickup_manual_tab(username: str, password: str, pin: str) -> None:
     with date_col2:
         end_date = st.date_input("To", value=date.today(), key="pickup_manual_to")
     with date_col3:
-        batch_days = st.number_input("Batch per berapa hari", min_value=1, value=7, step=1, key="pickup_manual_batch_days")
+        batch_days = st.number_input("Batch per berapa hari", min_value=1, value=5, step=1, key="pickup_manual_batch_days")
     with date_col4:
         output_dir = st.text_input(
             "Output Folder",
@@ -471,7 +471,7 @@ def render_monitoring_gateway_tab(username: str, password: str, pin: str) -> Non
         from_time = st.text_input("Dari Jam", value="00:00:00", key="gateway_from_time")
         to_time = st.text_input("Sampai Jam", value="23:59:59", key="gateway_to_time")
     with col3:
-        batch_days = st.number_input("Batch per berapa hari", min_value=1, value=7, step=1, key="gateway_batch_days")
+        batch_days = st.number_input("Batch per berapa hari", min_value=1, value=5, step=1, key="gateway_batch_days")
         output_dir = st.text_input(
             "Output Folder",
             value=str(PROJECT_ROOT / "downloads" / "monitoring_gateway"),
@@ -576,7 +576,7 @@ def render_pod_v2_tab(username: str, password: str, pin: str) -> None:
         customer_div = select_value("Divisi Customer", meta["customer_div"], "pod_v2_customer_div")
         insurance = select_value("Asuransi", meta["opt_insurance"], "pod_v2_insurance")
     with col6:
-        batch_days = st.number_input("Batch per berapa hari", min_value=1, value=7, step=1, key="pod_v2_batch_days")
+        batch_days = st.number_input("Batch per berapa hari", min_value=1, value=5, step=1, key="pod_v2_batch_days")
         output_dir = st.text_input(
             "Output Folder",
             value=str(PROJECT_ROOT / "downloads" / "pod_v2"),
