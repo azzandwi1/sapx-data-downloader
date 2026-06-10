@@ -18,6 +18,7 @@ ProgressCallback = Callable[[dict], None]
 
 PICKUP_MONITORING_URL = f"{BASE_URL}/pickup/monitoring_list"
 PICKUP_MANUAL_MONITORING_URL = f"{BASE_URL}/pickup_manual/monitoring_list"
+DEFAULT_TIMEOUT = 45 * 60
 
 
 @dataclass
@@ -297,7 +298,7 @@ def run_pickup_export_batches(
     end_date: date,
     batch_days: int,
     output_dir: Path,
-    timeout: int = 180,
+    timeout: int = DEFAULT_TIMEOUT,
     max_retries: int = 3,
     retry_delay: int = 5,
     progress_callback: ProgressCallback | None = None,
@@ -346,7 +347,7 @@ def run_pickup_manual_export_batches(
     end_date: date,
     batch_days: int,
     output_dir: Path,
-    timeout: int = 180,
+    timeout: int = DEFAULT_TIMEOUT,
     max_retries: int = 3,
     retry_delay: int = 5,
     progress_callback: ProgressCallback | None = None,

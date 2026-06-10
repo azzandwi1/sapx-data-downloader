@@ -29,6 +29,7 @@ from sapx_downloader.pickup_exports import (
 )
 
 COOKIE_PREFIX = "sapx_downloader"
+DEFAULT_REQUEST_TIMEOUT = 45 * 60
 
 
 st.set_page_config(page_title="SAPX Data Downloader", layout="wide")
@@ -143,6 +144,11 @@ def search_customers(menu: str, username: str, password: str, pin: str, query: s
 
 
 def make_progress_callback(overall_bar, overall_text, file_bar, file_text):
+    state = {
+        "unknown_file_name": None,
+        "unknown_tick": 0,
+    }
+
     def callback(payload: dict) -> None:
         if payload["stage"] == "overall":
             current = payload["chunk_index"]
@@ -156,14 +162,28 @@ def make_progress_callback(overall_bar, overall_text, file_bar, file_text):
             overall_text.write(label)
             file_bar.progress(0.0)
             file_text.write("Memulai download file...")
+            state["unknown_file_name"] = None
+            state["unknown_tick"] = 0
         elif payload["stage"] == "file":
             total_bytes = payload.get("total_bytes") or 0
             downloaded = payload.get("downloaded_bytes", 0)
-            progress_value = downloaded / total_bytes if total_bytes else 0.0
+            file_name = payload.get("file_name") or ""
+            if total_bytes:
+                progress_value = max(0.0, min(1.0, downloaded / total_bytes))
+                state["unknown_file_name"] = None
+                state["unknown_tick"] = 0
+            else:
+                if state["unknown_file_name"] != file_name:
+                    state["unknown_file_name"] = file_name
+                    state["unknown_tick"] = 0
+                state["unknown_tick"] += 1
+                progress_value = min(0.95, 0.08 + (state["unknown_tick"] % 18) * 0.045)
             file_bar.progress(progress_value)
             byte_text = f"{downloaded:,}"
             if total_bytes:
                 byte_text += f" / {total_bytes:,}"
+            else:
+                byte_text += " / ukuran file belum diketahui"
             file_label = payload.get("file_name") or f"File {payload['chunk_index']}/{payload['chunk_total']}"
             if payload.get("file_index") and payload.get("file_total"):
                 file_label = f"{payload['file_index']}/{payload['file_total']} - {file_label}"
@@ -275,7 +295,7 @@ def render_pickup_tab(username: str, password: str, pin: str) -> None:
 
     runtime_col1, runtime_col2 = st.columns(2)
     with runtime_col1:
-        timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=600, step=30, key="pickup_timeout")
+        timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=DEFAULT_REQUEST_TIMEOUT, step=30, key="pickup_timeout")
     with runtime_col2:
         retry_count = st.number_input("Retry saat timeout", min_value=1, value=3, step=1, key="pickup_retries")
 
@@ -387,7 +407,7 @@ def render_pickup_manual_tab(username: str, password: str, pin: str) -> None:
 
     runtime_col1, runtime_col2 = st.columns(2)
     with runtime_col1:
-        timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=600, step=30, key="pickup_manual_timeout")
+        timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=DEFAULT_REQUEST_TIMEOUT, step=30, key="pickup_manual_timeout")
     with runtime_col2:
         retry_count = st.number_input("Retry saat timeout", min_value=1, value=3, step=1, key="pickup_manual_retries")
 
@@ -468,7 +488,7 @@ def render_monitoring_gateway_tab(username: str, password: str, pin: str) -> Non
 
     runtime_col1, runtime_col2 = st.columns(2)
     with runtime_col1:
-        timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=600, step=30, key="gateway_timeout")
+        timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=DEFAULT_REQUEST_TIMEOUT, step=30, key="gateway_timeout")
     with runtime_col2:
         retry_count = st.number_input("Retry saat timeout", min_value=1, value=3, step=1, key="gateway_retries")
 
@@ -565,11 +585,11 @@ def render_pod_v2_tab(username: str, password: str, pin: str) -> None:
 
     runtime_col1, runtime_col2, runtime_col3 = st.columns(3)
     with runtime_col1:
-        timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=600, step=30, key="pod_v2_timeout")
+        timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=DEFAULT_REQUEST_TIMEOUT, step=30, key="pod_v2_timeout")
     with runtime_col2:
         retry_count = st.number_input("Retry saat timeout", min_value=1, value=3, step=1, key="pod_v2_retries")
     with runtime_col3:
-        poll_timeout = st.number_input("Maksimum tunggu proses (detik)", min_value=60, value=900, step=30, key="pod_v2_poll_timeout")
+        poll_timeout = st.number_input("Maksimum tunggu proses (detik)", min_value=60, value=DEFAULT_REQUEST_TIMEOUT, step=30, key="pod_v2_poll_timeout")
 
     if st.button("Execute Export POD V2", type="primary"):
         overall_text = st.empty()
@@ -645,7 +665,7 @@ def render_pod_by_awb_tab(username: str, password: str, pin: str) -> None:
     with col1:
         awb_per_file = st.number_input("Maksimum AWB per file", min_value=1, max_value=500, value=500, step=1, key="pod_by_awb_per_file")
     with col2:
-        timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=600, step=30, key="pod_by_awb_timeout")
+        timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=DEFAULT_REQUEST_TIMEOUT, step=30, key="pod_by_awb_timeout")
     with col3:
         retry_count = st.number_input("Retry saat timeout", min_value=1, value=3, step=1, key="pod_by_awb_retries")
 

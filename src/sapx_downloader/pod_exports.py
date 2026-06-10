@@ -24,6 +24,7 @@ POD_REPORT_V2_DOWNLOAD_ROOT = "https://report-js.coresyssap.com/download_report"
 
 POD_BY_AWB_URL = f"{BASE_URL}/report/pod_by_awb"
 POD_BY_AWB_EXPORT_URL = "https://report02-aws-jkt.coresyssap.com/report_pod/export_report_pod_by_awb/"
+DEFAULT_TIMEOUT = 45 * 60
 
 
 @dataclass
@@ -472,11 +473,11 @@ def run_pod_report_v2_batches(
     end_date: date,
     batch_days: int,
     output_dir: Path,
-    timeout: int = 180,
+    timeout: int = DEFAULT_TIMEOUT,
     max_retries: int = 3,
     retry_delay: int = 5,
     poll_interval: int = 5,
-    poll_timeout: int = 900,
+    poll_timeout: int = DEFAULT_TIMEOUT,
     progress_callback: ProgressCallback | None = None,
 ) -> list[PodV2Result]:
     chunks = split_date_range(start_date, end_date, batch_days)
@@ -561,7 +562,7 @@ def run_pod_by_awb_batches(
     raw_awbs: str,
     output_dir: Path,
     awb_per_file: int = 500,
-    timeout: int = 180,
+    timeout: int = DEFAULT_TIMEOUT,
     max_retries: int = 3,
     retry_delay: int = 5,
     progress_callback: ProgressCallback | None = None,

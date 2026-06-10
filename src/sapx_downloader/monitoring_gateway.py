@@ -22,6 +22,7 @@ REPORT_FORM_URL = f"{BASE_URL}/report_monitoring/process_monitoring_gateway"
 MONITORING_GATEWAY_PAGE_URL = f"{BASE_URL}/report_monitoring/monitoring_gateway"
 DEFAULT_CHECKPOINT = "7"
 DEFAULT_BRANCH = os.getenv("CORESYS_BRANCH", "NASIONAL")
+DEFAULT_TIMEOUT = 45 * 60
 
 
 @dataclass
@@ -141,7 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--to-time", default="23:59:59")
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--skip-existing", action="store_true")
-    parser.add_argument("--timeout", type=int, default=180)
+    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     return parser
 
 
@@ -436,7 +437,7 @@ def run_monitoring_gateway_batches(
     end_date: date,
     batch_days: int,
     output_root: Path,
-    timeout: int = 180,
+    timeout: int = DEFAULT_TIMEOUT,
     skip_existing: bool = False,
     max_retries: int = 3,
     retry_delay: int = 5,
