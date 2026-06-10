@@ -1,0 +1,705 @@
+import sys
+from datetime import date
+from pathlib import Path
+
+import extra_streamlit_components as stx
+import streamlit as st
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from sapx_downloader.auth import build_authenticated_session
+from sapx_downloader.monitoring_gateway import get_monitoring_gateway_filters, run_monitoring_gateway_batches
+from sapx_downloader.pod_exports import (
+    get_pod_by_awb_filters,
+    get_pod_report_v2_filters,
+    run_pod_by_awb_batches,
+    run_pod_report_v2_batches,
+    search_pod_v2_customers,
+)
+from sapx_downloader.pickup_exports import (
+    get_pickup_manual_filters,
+    get_pickup_monitoring_filters,
+    run_pickup_export_batches,
+    run_pickup_manual_export_batches,
+    search_pickup_customers,
+    search_pickup_manual_customers,
+)
+
+COOKIE_PREFIX = "sapx_downloader"
+
+
+st.set_page_config(page_title="SAPX Data Downloader", layout="wide")
+
+
+def get_cookie_manager() -> stx.CookieManager:
+    return stx.CookieManager()
+
+
+def init_state() -> None:
+    st.session_state.setdefault("gateway_filters_meta", None)
+    st.session_state.setdefault("pickup_filters_meta", None)
+    st.session_state.setdefault("pickup_manual_filters_meta", None)
+    st.session_state.setdefault("pod_v2_filters_meta", None)
+    st.session_state.setdefault("pod_by_awb_filters_meta", None)
+    st.session_state.setdefault("pickup_customer_results", [])
+    st.session_state.setdefault("pickup_manual_customer_results", [])
+    st.session_state.setdefault("pod_customer_results", [])
+    st.session_state.setdefault("remember_me", False)
+    st.session_state.setdefault("remember_me_loaded", False)
+
+
+def hydrate_remembered_credentials(cookie_manager: stx.CookieManager) -> None:
+    if st.session_state.get("remember_me_loaded"):
+        return
+    remembered_flag = cookie_manager.get(f"{COOKIE_PREFIX}_remember_me")
+    remembered = remembered_flag == "1"
+    st.session_state["remember_me"] = remembered
+    if remembered:
+        st.session_state.setdefault("username", cookie_manager.get(f"{COOKIE_PREFIX}_username") or "")
+        st.session_state.setdefault("password", cookie_manager.get(f"{COOKIE_PREFIX}_password") or "")
+        st.session_state.setdefault("pin", cookie_manager.get(f"{COOKIE_PREFIX}_pin") or "")
+    else:
+        st.session_state.setdefault("username", "")
+        st.session_state.setdefault("password", "")
+        st.session_state.setdefault("pin", "")
+    st.session_state["remember_me_loaded"] = True
+
+
+def persist_remembered_credentials(
+    cookie_manager: stx.CookieManager,
+    username: str,
+    password: str,
+    pin: str,
+    remember_me: bool,
+) -> None:
+    if remember_me:
+        cookie_manager.set(f"{COOKIE_PREFIX}_remember_me", "1")
+        cookie_manager.set(f"{COOKIE_PREFIX}_username", username)
+        cookie_manager.set(f"{COOKIE_PREFIX}_password", password)
+        cookie_manager.set(f"{COOKIE_PREFIX}_pin", pin)
+    else:
+        clear_remembered_credentials(cookie_manager)
+
+
+def clear_remembered_credentials(cookie_manager: stx.CookieManager) -> None:
+    cookie_manager.delete(f"{COOKIE_PREFIX}_remember_me")
+    cookie_manager.delete(f"{COOKIE_PREFIX}_username")
+    cookie_manager.delete(f"{COOKIE_PREFIX}_password")
+    cookie_manager.delete(f"{COOKIE_PREFIX}_pin")
+
+
+def option_map(options: list[dict]) -> dict[str, str]:
+    mapping = {item["label"] or item["value"]: item["value"] for item in options}
+    if not mapping:
+        mapping = {"-": "-"}
+    return mapping
+
+
+def select_value(label: str, options: list[dict], key: str) -> str:
+    mapping = option_map(options)
+    labels = list(mapping.keys())
+    selected_label = st.selectbox(label, labels, key=key)
+    return mapping.get(selected_label, "-")
+
+
+def select_from_mapping(label: str, mapping: dict[str, str], key: str) -> str:
+    labels = list(mapping.keys()) or ["-"]
+    selected_label = st.selectbox(label, labels, key=key)
+    return mapping.get(selected_label, "-")
+
+
+def filter_branch_options(options: list[dict], area_value: str) -> list[dict]:
+    if not area_value or area_value == "-":
+        return options
+    if not any(item.get("attrs", {}).get("data-area") for item in options):
+        return options
+    filtered = [item for item in options if item.get("attrs", {}).get("data-area") == area_value or item["value"] == "-"]
+    return filtered or options
+
+
+def connect_and_load_filters(username: str, password: str, pin: str) -> None:
+    session = build_authenticated_session(username, password, pin)
+    st.session_state["gateway_filters_meta"] = get_monitoring_gateway_filters(session)
+    st.session_state["pickup_filters_meta"] = get_pickup_monitoring_filters(session)
+    st.session_state["pickup_manual_filters_meta"] = get_pickup_manual_filters(session)
+    st.session_state["pod_v2_filters_meta"] = get_pod_report_v2_filters(session)
+    st.session_state["pod_by_awb_filters_meta"] = get_pod_by_awb_filters(session)
+
+
+def search_customers(menu: str, username: str, password: str, pin: str, query: str) -> None:
+    session = build_authenticated_session(username, password, pin)
+    if menu == "pickup":
+        results = search_pickup_customers(session, query)
+        st.session_state["pickup_customer_results"] = [result.__dict__ for result in results]
+    elif menu == "pod":
+        results = search_pod_v2_customers(session, query)
+        st.session_state["pod_customer_results"] = [result.__dict__ for result in results]
+    else:
+        results = search_pickup_manual_customers(session, query)
+        st.session_state["pickup_manual_customer_results"] = [result.__dict__ for result in results]
+
+
+def make_progress_callback(overall_bar, overall_text, file_bar, file_text):
+    def callback(payload: dict) -> None:
+        if payload["stage"] == "overall":
+            current = payload["chunk_index"]
+            total = payload["chunk_total"]
+            overall_bar.progress(current / total if total else 0.0)
+            label = payload.get("label")
+            if not label:
+                from_date = payload.get("from_date", "-")
+                to_date = payload.get("to_date", "-")
+                label = f"Batch {current}/{total}: {from_date} s/d {to_date}"
+            overall_text.write(label)
+            file_bar.progress(0.0)
+            file_text.write("Memulai download file...")
+        elif payload["stage"] == "file":
+            total_bytes = payload.get("total_bytes") or 0
+            downloaded = payload.get("downloaded_bytes", 0)
+            progress_value = downloaded / total_bytes if total_bytes else 0.0
+            file_bar.progress(progress_value)
+            byte_text = f"{downloaded:,}"
+            if total_bytes:
+                byte_text += f" / {total_bytes:,}"
+            file_label = payload.get("file_name") or f"File {payload['chunk_index']}/{payload['chunk_total']}"
+            if payload.get("file_index") and payload.get("file_total"):
+                file_label = f"{payload['file_index']}/{payload['file_total']} - {file_label}"
+            file_text.write(
+                f"{file_label} | {byte_text} bytes | {payload['speed_text']}"
+            )
+        elif payload["stage"] == "status":
+            file_text.write(payload["message"])
+        elif payload["stage"] == "retry":
+            file_text.write(
+                f"Retry {payload['attempt']}/{payload['max_retries']} | {payload['message']}"
+            )
+    return callback
+
+
+def render_sidebar() -> tuple[str, str, str]:
+    cookie_manager = get_cookie_manager()
+    hydrate_remembered_credentials(cookie_manager)
+    with st.sidebar:
+        st.header("Login")
+        username = st.text_input("Username", key="username")
+        password = st.text_input("Password", type="password", key="password")
+        pin = st.text_input("PIN", type="password", key="pin", max_chars=6)
+        remember_me = st.checkbox("Ingat saya di browser ini", key="remember_me")
+        if st.button("Load Filters", use_container_width=True):
+            try:
+                connect_and_load_filters(username, password, pin)
+                persist_remembered_credentials(cookie_manager, username, password, pin, remember_me)
+                st.success("Filter berhasil dimuat.")
+            except Exception as exc:  # noqa: BLE001
+                st.error(str(exc))
+        if st.button("Lupakan login tersimpan", use_container_width=True):
+            clear_remembered_credentials(cookie_manager)
+            st.session_state["username"] = ""
+            st.session_state["password"] = ""
+            st.session_state["pin"] = ""
+            st.session_state["remember_me"] = False
+            st.success("Login tersimpan di browser ini sudah dihapus.")
+            st.rerun()
+        st.caption("Kredensial default dikosongkan. Jika `Ingat saya` dicentang, data login disimpan di browser user ini saja.")
+    return username, password, pin
+
+
+def render_pickup_tab(username: str, password: str, pin: str) -> None:
+    st.subheader("Pickup > Monitoring Pickup")
+    meta = st.session_state.get("pickup_filters_meta")
+    if not meta:
+        st.info("Klik `Load Filters` di sidebar untuk memuat pilihan filter Pickup dari website.")
+        return
+
+    search_col, select_col = st.columns([1, 2])
+    with search_col:
+        pickup_customer_query = st.text_input("Cari Customer", key="pickup_customer_query")
+        if st.button("Search Customer Pickup"):
+            search_customers("pickup", username, password, pin, pickup_customer_query)
+    with select_col:
+        customer_results = st.session_state["pickup_customer_results"]
+        customer_labels = ["-"] + [item["label"] for item in customer_results]
+        pickup_customer_label = st.selectbox("Customer", customer_labels, key="pickup_customer_label")
+        pickup_customer_value = next(
+            (item["value"] for item in customer_results if item["label"] == pickup_customer_label),
+            "-",
+        )
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        origin_region_value = select_value("Origin Region", meta["origin_regions"], "pickup_origin_region")
+        origin_branch_options = filter_branch_options(meta["origin_branches"], origin_region_value)
+        origin_branch_value = select_value("Cabang Asal", origin_branch_options, "pickup_origin_branch")
+        status_value = select_value("Status Pickup", meta["status_pickup"], "pickup_status")
+    with col2:
+        destination_region_value = select_value("Destination Region", meta["destination_regions"], "pickup_destination_region")
+        destination_branch_options = filter_branch_options(meta["destination_branches"], destination_region_value)
+        destination_branch_value = select_value("Cabang Tujuan", destination_branch_options, "pickup_destination_branch")
+        cod_value = select_value("Status COD", meta["status_cod"], "pickup_cod")
+    with col3:
+        date_basis_value = select_value("Berdasarkan Tanggal", meta["date_basis"], "pickup_date_basis")
+        pickup_method_value = select_value("Metode Pickup", meta["pickup_method"], "pickup_method")
+        grouping_value = select_value("Status Grouping", meta["grouping_status"], "pickup_grouping")
+
+    date_col1, date_col2, date_col3, date_col4 = st.columns(4)
+    with date_col1:
+        start_date = st.date_input("From", value=date.today(), key="pickup_from")
+    with date_col2:
+        end_date = st.date_input("To", value=date.today(), key="pickup_to")
+    with date_col3:
+        batch_days = st.number_input("Batch per berapa hari", min_value=1, value=7, step=1, key="pickup_batch_days")
+    with date_col4:
+        export_kind = select_from_mapping(
+            "Jenis Export",
+            {
+                "Export Report Pickup": "report_pickup",
+                "Export Monitoring": "monitoring",
+            },
+            "pickup_export_kind",
+        )
+
+    metric_col1, metric_col2, metric_col3 = st.columns(3)
+    with metric_col1:
+        koli = st.text_input("Koli", value="-", key="pickup_koli")
+    with metric_col2:
+        kilo = st.text_input("Kilo", value="-", key="pickup_kilo")
+    with metric_col3:
+        output_dir = st.text_input(
+            "Output Folder",
+            value=str(PROJECT_ROOT / "downloads" / "pickup_monitoring"),
+            key="pickup_output_dir",
+        )
+
+    runtime_col1, runtime_col2 = st.columns(2)
+    with runtime_col1:
+        timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=600, step=30, key="pickup_timeout")
+    with runtime_col2:
+        retry_count = st.number_input("Retry saat timeout", min_value=1, value=3, step=1, key="pickup_retries")
+
+    if st.button("Execute Pickup Export", type="primary"):
+        if date_basis_value in ("0", "-"):
+            st.error("Pilih dulu filter berdasarkan tanggal pickup.")
+            return
+
+        filters = {
+            "customer": pickup_customer_value or "-",
+            "origin_region": origin_region_value or "-",
+            "origin_branch": origin_branch_value or "-",
+            "destination_region": destination_region_value or "-",
+            "destination_branch": destination_branch_value or "-",
+            "pickup_status": status_value or "-",
+            "cod_status": cod_value or "-",
+            "pickup_method": pickup_method_value or "-",
+            "grouping_status": grouping_value or "-",
+            "date_basis": date_basis_value or "-",
+            "koli": koli.strip() or "-",
+            "kilo": kilo.strip() or "-",
+        }
+
+        overall_text = st.empty()
+        overall_bar = st.progress(0.0)
+        file_text = st.empty()
+        file_bar = st.progress(0.0)
+        progress_callback = make_progress_callback(overall_bar, overall_text, file_bar, file_text)
+
+        try:
+            session = build_authenticated_session(username, password, pin)
+            results = run_pickup_export_batches(
+                session=session,
+                export_kind=export_kind,
+                filters=filters,
+                start_date=start_date,
+                end_date=end_date,
+                batch_days=int(batch_days),
+                output_dir=Path(output_dir),
+                timeout=int(timeout_seconds),
+                max_retries=int(retry_count),
+                progress_callback=progress_callback,
+            )
+            st.success(f"Selesai. {len(results)} file batch berhasil diunduh.")
+            st.dataframe([result.__dict__ for result in results], width="stretch")
+        except Exception as exc:  # noqa: BLE001
+            st.error(str(exc))
+
+
+def render_pickup_manual_tab(username: str, password: str, pin: str) -> None:
+    st.subheader("Pickup Manual > Monitoring Pickup")
+    meta = st.session_state.get("pickup_manual_filters_meta")
+    if not meta:
+        st.info("Klik `Load Filters` di sidebar untuk memuat pilihan filter Pickup Manual dari website.")
+        return
+
+    search_col, select_col = st.columns([1, 2])
+    with search_col:
+        query = st.text_input("Cari Customer", key="pickup_manual_customer_query")
+        if st.button("Search Customer Manual"):
+            search_customers("pickup_manual", username, password, pin, query)
+    with select_col:
+        customer_results = st.session_state["pickup_manual_customer_results"]
+        customer_labels = ["-"] + [item["label"] for item in customer_results]
+        customer_label = st.selectbox("Customer", customer_labels, key="pickup_manual_customer_label")
+        customer_value = next(
+            (item["value"] for item in customer_results if item["label"] == customer_label),
+            "-",
+        )
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        origin_region_value = select_value("Origin Region", meta["origin_regions"], "pickup_manual_origin_region")
+        origin_branch_options = filter_branch_options(meta["origin_branches"], origin_region_value)
+        origin_branch_value = select_value("Cabang Asal", origin_branch_options, "pickup_manual_origin_branch")
+    with col2:
+        status_value = select_value("Status Pickup", meta["status_pickup"], "pickup_manual_status")
+        counter_value = select_value("Tipe Konter", meta["counter_type"], "pickup_manual_counter")
+    with col3:
+        date_basis_value = select_value("Berdasarkan Tanggal", meta["date_basis"], "pickup_manual_date_basis")
+        export_kind = select_from_mapping(
+            "Jenis Export",
+            {
+                "Export Pickup Manual Outstanding": "outstanding",
+                "Export Pickup Manual Produktifitas": "productivity",
+            },
+            "pickup_manual_export_kind",
+        )
+
+    date_col1, date_col2, date_col3, date_col4 = st.columns(4)
+    with date_col1:
+        start_date = st.date_input("From", value=date.today(), key="pickup_manual_from")
+    with date_col2:
+        end_date = st.date_input("To", value=date.today(), key="pickup_manual_to")
+    with date_col3:
+        batch_days = st.number_input("Batch per berapa hari", min_value=1, value=7, step=1, key="pickup_manual_batch_days")
+    with date_col4:
+        output_dir = st.text_input(
+            "Output Folder",
+            value=str(PROJECT_ROOT / "downloads" / "pickup_manual_monitoring"),
+            key="pickup_manual_output_dir",
+        )
+
+    metric_col1, metric_col2 = st.columns(2)
+    with metric_col1:
+        koli = st.text_input("Koli", value="-", key="pickup_manual_koli")
+    with metric_col2:
+        kilo = st.text_input("Kilo", value="-", key="pickup_manual_kilo")
+
+    runtime_col1, runtime_col2 = st.columns(2)
+    with runtime_col1:
+        timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=600, step=30, key="pickup_manual_timeout")
+    with runtime_col2:
+        retry_count = st.number_input("Retry saat timeout", min_value=1, value=3, step=1, key="pickup_manual_retries")
+
+    if st.button("Execute Pickup Manual Export", type="primary"):
+        if date_basis_value in ("0", "-"):
+            st.error("Pilih dulu filter berdasarkan tanggal pickup.")
+            return
+
+        filters = {
+            "customer": customer_value or "-",
+            "origin_region": origin_region_value or "-",
+            "origin_branch": origin_branch_value or "-",
+            "destination_region": "-",
+            "destination_branch": "-",
+            "pickup_status": status_value or "-",
+            "counter_type": counter_value or "-",
+            "date_basis": date_basis_value or "-",
+            "koli": koli.strip() or "-",
+            "kilo": kilo.strip() or "-",
+        }
+
+        overall_text = st.empty()
+        overall_bar = st.progress(0.0)
+        file_text = st.empty()
+        file_bar = st.progress(0.0)
+        progress_callback = make_progress_callback(overall_bar, overall_text, file_bar, file_text)
+
+        try:
+            session = build_authenticated_session(username, password, pin)
+            results = run_pickup_manual_export_batches(
+                session=session,
+                export_kind=export_kind,
+                filters=filters,
+                start_date=start_date,
+                end_date=end_date,
+                batch_days=int(batch_days),
+                output_dir=Path(output_dir),
+                timeout=int(timeout_seconds),
+                max_retries=int(retry_count),
+                progress_callback=progress_callback,
+            )
+            st.success(f"Selesai. {len(results)} file batch berhasil diunduh.")
+            st.dataframe([result.__dict__ for result in results], width="stretch")
+        except Exception as exc:  # noqa: BLE001
+            st.error(str(exc))
+
+
+def render_monitoring_gateway_tab(username: str, password: str, pin: str) -> None:
+    st.subheader("Monitoring Proses Operational > Laporan Monitoring Proses")
+    st.caption("Filter tab ini mengikuti form web aslinya, lalu range besar akan dipecah otomatis per batch N hari.")
+    meta = st.session_state.get("gateway_filters_meta")
+    if not meta:
+        st.info("Klik `Load Filters` di sidebar untuk memuat pilihan Check Point dan Cabang dari website.")
+        return
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        checkpoint = select_value("Check Point", meta["checkpoints"], "gateway_checkpoint")
+        branch = select_value("Cabang", meta["branches"], "gateway_branch")
+    with col2:
+        from_time = st.text_input("Dari Jam", value="00:00:00", key="gateway_from_time")
+        to_time = st.text_input("Sampai Jam", value="23:59:59", key="gateway_to_time")
+    with col3:
+        batch_days = st.number_input("Batch per berapa hari", min_value=1, value=7, step=1, key="gateway_batch_days")
+        output_dir = st.text_input(
+            "Output Folder",
+            value=str(PROJECT_ROOT / "downloads" / "monitoring_gateway"),
+            key="gateway_output_dir",
+        )
+
+    date_col1, date_col2, date_col3 = st.columns(3)
+    with date_col1:
+        start_date = st.date_input("From", value=date.today(), key="gateway_from")
+    with date_col2:
+        end_date = st.date_input("To", value=date.today(), key="gateway_to")
+    with date_col3:
+        skip_existing = st.checkbox("Skip file yang sudah ada", value=True, key="gateway_skip_existing")
+
+    runtime_col1, runtime_col2 = st.columns(2)
+    with runtime_col1:
+        timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=600, step=30, key="gateway_timeout")
+    with runtime_col2:
+        retry_count = st.number_input("Retry saat timeout", min_value=1, value=3, step=1, key="gateway_retries")
+
+    if st.button("Execute Monitoring Proses Export", type="primary"):
+        overall_text = st.empty()
+        overall_bar = st.progress(0.0)
+        file_text = st.empty()
+        file_bar = st.progress(0.0)
+        progress_callback = make_progress_callback(overall_bar, overall_text, file_bar, file_text)
+
+        try:
+            session = build_authenticated_session(username, password, pin)
+            results = run_monitoring_gateway_batches(
+                session=session,
+                checkpoint=checkpoint,
+                branch=branch.strip() or "NASIONAL",
+                from_time=from_time.strip() or "00:00:00",
+                to_time=to_time.strip() or "23:59:59",
+                start_date=start_date,
+                end_date=end_date,
+                batch_days=int(batch_days),
+                output_root=Path(output_dir),
+                timeout=int(timeout_seconds),
+                skip_existing=skip_existing,
+                max_retries=int(retry_count),
+                progress_callback=progress_callback,
+            )
+            st.success(f"Selesai. {len(results)} batch berhasil diproses.")
+            st.dataframe([result.__dict__ for result in results], width="stretch")
+        except Exception as exc:  # noqa: BLE001
+            st.error(str(exc))
+
+
+def render_pod_v2_tab(username: str, password: str, pin: str) -> None:
+    st.subheader("Laporan POD > Export Laporan POD V2")
+    st.caption("Form mengikuti halaman asli. Range besar akan dipecah otomatis per batch hari, lalu setiap batch diproses sampai file siap diunduh.")
+    meta = st.session_state.get("pod_v2_filters_meta")
+    if not meta:
+        st.info("Klik `Load Filters` di sidebar untuk memuat pilihan filter Laporan POD V2 dari website.")
+        return
+
+    search_col, select_col = st.columns([1, 2])
+    with search_col:
+        customer_query = st.text_input("Cari Customer POD", key="pod_customer_query")
+        if st.button("Search Customer POD"):
+            search_customers("pod", username, password, pin, customer_query)
+    with select_col:
+        customer_results = st.session_state["pod_customer_results"]
+        customer_labels = ["-"] + [item["label"] for item in customer_results]
+        customer_label = st.selectbox("Customer", customer_labels, key="pod_customer_label")
+        customer_value = next(
+            (item["value"] for item in customer_results if item["label"] == customer_label),
+            "",
+        )
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        export_date_type = select_value("Berdasarkan Tanggal", meta["export_date_type"], "pod_v2_export_date_type")
+        origin_area = select_value("Area Asal", meta["origin_area_branch_code"], "pod_v2_origin_area")
+        origin_branch_options = filter_branch_options(meta["origin_branch_code"], origin_area)
+        origin_branch = select_value("Cabang Asal", origin_branch_options, "pod_v2_origin_branch")
+        report_type = select_value("Tipe Laporan", meta["report_type_code"], "pod_v2_report_type")
+        flag_return = select_value("Flag Return", meta["flag_return"], "pod_v2_flag_return")
+    with col2:
+        destination_area = select_value("Area Tujuan", meta["destination_area_branch_code"], "pod_v2_destination_area")
+        destination_branch_options = filter_branch_options(meta["destination_branch_code"], destination_area)
+        destination_branch = select_value("Cabang Tujuan", destination_branch_options, "pod_v2_destination_branch")
+        pod_status = select_value("Status POD", meta["pod_status_code"], "pod_v2_pod_status")
+        transaction_type = select_value("Tipe Transaksi", meta["transaction_type_code"], "pod_v2_transaction_type")
+        flag_rowstate = select_value("Rowstate", meta["flag_rowstate"], "pod_v2_flag_rowstate")
+    with col3:
+        service_type = select_value("Service", meta["service_type_code"], "pod_v2_service_type")
+        courier_code = select_value("Kurir", meta["courier_code"], "pod_v2_courier_code")
+        transportation_code = select_value("Transportasi", meta["transportation_code"], "pod_v2_transportation_code")
+        shipment_type = select_value("Jenis Barang", meta["shipment_type_code"], "pod_v2_shipment_type")
+        awb_type = select_value("Tipe AWB", meta["awb_type"], "pod_v2_awb_type")
+
+    col4, col5, col6 = st.columns(3)
+    with col4:
+        start_date = st.date_input("From", value=date.today(), key="pod_v2_from")
+        awb_master_id = st.text_input("No. AWB", value="", key="pod_v2_awb_master_id")
+        tgl_terima = st.text_input("Tanggal POD", value="", key="pod_v2_tgl_terima")
+    with col5:
+        end_date = st.date_input("To", value=date.today(), key="pod_v2_to")
+        customer_div = select_value("Divisi Customer", meta["customer_div"], "pod_v2_customer_div")
+        insurance = select_value("Asuransi", meta["opt_insurance"], "pod_v2_insurance")
+    with col6:
+        batch_days = st.number_input("Batch per berapa hari", min_value=1, value=7, step=1, key="pod_v2_batch_days")
+        output_dir = st.text_input(
+            "Output Folder",
+            value=str(PROJECT_ROOT / "downloads" / "pod_v2"),
+            key="pod_v2_output_dir",
+        )
+
+    runtime_col1, runtime_col2, runtime_col3 = st.columns(3)
+    with runtime_col1:
+        timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=600, step=30, key="pod_v2_timeout")
+    with runtime_col2:
+        retry_count = st.number_input("Retry saat timeout", min_value=1, value=3, step=1, key="pod_v2_retries")
+    with runtime_col3:
+        poll_timeout = st.number_input("Maksimum tunggu proses (detik)", min_value=60, value=900, step=30, key="pod_v2_poll_timeout")
+
+    if st.button("Execute Export POD V2", type="primary"):
+        overall_text = st.empty()
+        overall_bar = st.progress(0.0)
+        file_text = st.empty()
+        file_bar = st.progress(0.0)
+        progress_callback = make_progress_callback(overall_bar, overall_text, file_bar, file_text)
+
+        filters = {
+            "export_date_type": export_date_type,
+            "origin_area_branch_code": origin_area,
+            "origin_branch_code": origin_branch,
+            "destination_area_branch_code": destination_area,
+            "destination_branch_code": destination_branch,
+            "customer_code": customer_value,
+            "tgl_terima": tgl_terima.strip(),
+            "report_type_code": report_type,
+            "pod_status_code": pod_status,
+            "transaction_type_code": transaction_type,
+            "service_type_code": service_type,
+            "courier_code": courier_code,
+            "transportation_code": transportation_code,
+            "opt_insurance": insurance,
+            "customer_div": customer_div,
+            "flag_return": flag_return,
+            "flag_rowstate": "1" if report_type == "4" else flag_rowstate,
+            "shipment_type_code": shipment_type,
+            "awb_type": awb_type,
+            "awb_master_id": awb_master_id.strip(),
+            "auth_token": meta["auth_token"],
+            "is_encrypted": meta["is_encrypted"],
+            "userdata": meta["userdata"],
+        }
+
+        try:
+            session = build_authenticated_session(username, password, pin)
+            results = run_pod_report_v2_batches(
+                session=session,
+                filters=filters,
+                start_date=start_date,
+                end_date=end_date,
+                batch_days=int(batch_days),
+                output_dir=Path(output_dir),
+                timeout=int(timeout_seconds),
+                max_retries=int(retry_count),
+                poll_timeout=int(poll_timeout),
+                progress_callback=progress_callback,
+            )
+            st.success(f"Selesai. {len(results)} file batch berhasil diunduh.")
+            st.dataframe([result.__dict__ for result in results], width="stretch")
+        except Exception as exc:  # noqa: BLE001
+            st.error(str(exc))
+
+
+def render_pod_by_awb_tab(username: str, password: str, pin: str) -> None:
+    st.subheader("Laporan POD > Laporan POD BY AWB")
+    st.caption("Input AWB tidak dibatasi di UI. Saat export, sistem akan otomatis memecah maksimal 500 AWB per file.")
+    meta = st.session_state.get("pod_by_awb_filters_meta")
+    if not meta:
+        st.info("Klik `Load Filters` di sidebar untuk memuat pilihan filter POD BY AWB dari website.")
+        return
+
+    key_value = select_value("Dasar Pencarian", meta["key"], "pod_by_awb_key")
+    awb_text = st.text_area(
+        "Paste Nomor AWB",
+        value="",
+        height=260,
+        placeholder="Satu AWB per baris",
+        key="pod_by_awb_text",
+    )
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        awb_per_file = st.number_input("Maksimum AWB per file", min_value=1, max_value=500, value=500, step=1, key="pod_by_awb_per_file")
+    with col2:
+        timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=600, step=30, key="pod_by_awb_timeout")
+    with col3:
+        retry_count = st.number_input("Retry saat timeout", min_value=1, value=3, step=1, key="pod_by_awb_retries")
+
+    output_dir = st.text_input(
+        "Output Folder",
+        value=str(PROJECT_ROOT / "downloads" / "pod_by_awb"),
+        key="pod_by_awb_output_dir",
+    )
+
+    if st.button("Execute POD BY AWB Export", type="primary"):
+        overall_text = st.empty()
+        overall_bar = st.progress(0.0)
+        file_text = st.empty()
+        file_bar = st.progress(0.0)
+        progress_callback = make_progress_callback(overall_bar, overall_text, file_bar, file_text)
+
+        try:
+            session = build_authenticated_session(username, password, pin)
+            results = run_pod_by_awb_batches(
+                session=session,
+                key=key_value,
+                raw_awbs=awb_text,
+                output_dir=Path(output_dir),
+                awb_per_file=int(awb_per_file),
+                timeout=int(timeout_seconds),
+                max_retries=int(retry_count),
+                progress_callback=progress_callback,
+            )
+            st.success(f"Selesai. {len(results)} file berhasil diunduh.")
+            st.dataframe([result.__dict__ for result in results], width="stretch")
+        except Exception as exc:  # noqa: BLE001
+            st.error(str(exc))
+
+
+def main() -> None:
+    init_state()
+    st.title("SAPX Data Downloader")
+    st.caption("Batch export downloader untuk Monitoring Proses, Pickup Monitoring, Pickup Manual, dan Laporan POD.")
+    username, password, pin = render_sidebar()
+
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["Monitoring Proses", "Pickup Monitoring", "Pickup Manual Monitoring", "Laporan POD V2", "POD BY AWB"]
+    )
+    with tab1:
+        render_monitoring_gateway_tab(username, password, pin)
+    with tab2:
+        render_pickup_tab(username, password, pin)
+    with tab3:
+        render_pickup_manual_tab(username, password, pin)
+    with tab4:
+        render_pod_v2_tab(username, password, pin)
+    with tab5:
+        render_pod_by_awb_tab(username, password, pin)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,7 @@
+.env
+config/.env
+__pycache__/
+*.pyc
+downloads/
+logs/
+work/
