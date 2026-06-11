@@ -1,4 +1,5 @@
 import sys
+import shutil
 from io import BytesIO
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -34,6 +35,9 @@ COOKIE_PREFIX = "sapx_downloader"
 DEFAULT_REQUEST_TIMEOUT = 45 * 60
 DEFAULT_MAX_WORKERS = 4
 REMEMBER_ME_DAYS = 30
+DOWNLOAD_RETENTION_HOURS = 6
+ZIP_MAX_BYTES = 512 * 1024 * 1024
+DOWNLOAD_BUTTON_WARN_BYTES = 1024 * 1024 * 1024
 
 
 st.set_page_config(page_title="SAPX Data Downloader", layout="wide")
@@ -44,6 +48,7 @@ def get_cookie_manager() -> stx.CookieManager:
 
 
 def init_state() -> None:
+    cleanup_expired_downloads()
     st.session_state.setdefault("gateway_filters_meta", None)
     st.session_state.setdefault("pickup_filters_meta", None)
     st.session_state.setdefault("pickup_manual_filters_meta", None)
@@ -234,6 +239,16 @@ def build_zip_bytes(files: list[Path]) -> bytes:
     return buffer.getvalue()
 
 
+def format_bytes(num_bytes: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    value = float(num_bytes)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            return f"{int(value)} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{num_bytes} B"
+
+
 def normalize_download_paths(items: list[object], key: str) -> list[Path]:
     paths: list[Path] = []
     for item in items:
@@ -243,6 +258,38 @@ def normalize_download_paths(items: list[object], key: str) -> list[Path]:
             if path.exists() and path.is_file():
                 paths.append(path)
     return paths
+
+
+def cleanup_output_dir(path: Path) -> None:
+    if not path.exists():
+        path.mkdir(parents=True, exist_ok=True)
+        return
+    for child in path.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
+
+
+def cleanup_expired_downloads() -> None:
+    downloads_root = PROJECT_ROOT / "downloads"
+    if not downloads_root.exists():
+        return
+    cutoff = datetime.now() - timedelta(hours=DOWNLOAD_RETENTION_HOURS)
+    for path in downloads_root.rglob("*"):
+        try:
+            modified_at = datetime.fromtimestamp(path.stat().st_mtime)
+        except OSError:
+            continue
+        if modified_at >= cutoff:
+            continue
+        if path.is_file():
+            path.unlink(missing_ok=True)
+    for path in sorted((item for item in downloads_root.rglob("*") if item.is_dir()), reverse=True):
+        try:
+            path.rmdir()
+        except OSError:
+            pass
 
 
 def collect_monitoring_gateway_paths(items: list[object]) -> list[Path]:
@@ -263,33 +310,47 @@ def render_download_browser(result_key: str, title: str) -> None:
     if not paths:
         return
 
+    total_size = sum(path.stat().st_size for path in paths)
     st.markdown(f"**{title}**")
-    st.caption("File di bawah bisa langsung diunduh ke browser Anda. Jika ingin semua sekaligus, gunakan ZIP.")
-    zip_bytes = build_zip_bytes(paths)
-    st.download_button(
-        "Download Semua sebagai ZIP",
-        data=zip_bytes,
-        file_name=f"{result_key}.zip",
-        mime="application/zip",
-        key=f"{result_key}_zip_download",
-        use_container_width=True,
+    st.caption(
+        f"{len(paths)} file siap diunduh. Total ukuran sementara di server: {format_bytes(total_size)}. "
+        f"File lama dibersihkan otomatis setelah {DOWNLOAD_RETENTION_HOURS} jam."
     )
+    if total_size <= ZIP_MAX_BYTES:
+        zip_bytes = build_zip_bytes(paths)
+        st.download_button(
+            "Download Semua sebagai ZIP",
+            data=zip_bytes,
+            file_name=f"{result_key}.zip",
+            mime="application/zip",
+            key=f"{result_key}_zip_download",
+            use_container_width=True,
+        )
+    else:
+        st.info(
+            f"ZIP dinonaktifkan karena total file lebih dari {format_bytes(ZIP_MAX_BYTES)}. "
+            "Download per file agar memory Streamlit Cloud tidak penuh."
+        )
 
     for index, path in enumerate(paths, start=1):
+        file_size = path.stat().st_size
         col1, col2, col3 = st.columns([5, 2, 2])
         with col1:
             st.write(f"{index}. `{path.name}`")
         with col2:
-            st.write(f"{path.stat().st_size:,} bytes")
+            st.write(format_bytes(file_size))
         with col3:
-            st.download_button(
-                "Download",
-                data=path.read_bytes(),
-                file_name=path.name,
-                mime="application/octet-stream",
-                key=f"{result_key}_file_{index}",
-                use_container_width=True,
-            )
+            if file_size > DOWNLOAD_BUTTON_WARN_BYTES:
+                st.warning("File sangat besar; jika download gagal di Cloud, jalankan app lokal.")
+            with path.open("rb") as file_handle:
+                st.download_button(
+                    "Download",
+                    data=file_handle,
+                    file_name=path.name,
+                    mime="application/octet-stream",
+                    key=f"{result_key}_file_{index}",
+                    use_container_width=True,
+                )
 
 
 def internal_output_dir(name: str) -> Path:
@@ -400,6 +461,8 @@ def render_pickup_tab(username: str, password: str, pin: str) -> None:
         if date_basis_value in ("0", "-"):
             st.error("Pilih dulu filter berdasarkan tanggal pickup.")
             return
+        cleanup_output_dir(output_dir)
+        st.session_state["download_results"].pop("pickup_monitoring", None)
 
         filters = {
             "customer": pickup_customer_value or "-",
@@ -515,6 +578,8 @@ def render_pickup_manual_tab(username: str, password: str, pin: str) -> None:
         if date_basis_value in ("0", "-"):
             st.error("Pilih dulu filter berdasarkan tanggal pickup.")
             return
+        cleanup_output_dir(output_dir)
+        st.session_state["download_results"].pop("pickup_manual_monitoring", None)
 
         filters = {
             "customer": customer_value or "-",
@@ -595,6 +660,8 @@ def render_monitoring_gateway_tab(username: str, password: str, pin: str) -> Non
         max_workers = st.number_input("Parallel workers", min_value=1, max_value=12, value=DEFAULT_MAX_WORKERS, step=1, key="gateway_max_workers")
 
     if st.button("Execute Monitoring Proses Export", type="primary"):
+        cleanup_output_dir(output_dir)
+        st.session_state["download_results"].pop("monitoring_gateway", None)
         overall_text = st.empty()
         overall_bar = st.progress(0.0)
         file_text = st.empty()
@@ -697,6 +764,8 @@ def render_pod_v2_tab(username: str, password: str, pin: str) -> None:
         poll_interval = st.number_input("Interval cek status (detik)", min_value=1, max_value=30, value=2, step=1, key="pod_v2_poll_interval")
 
     if st.button("Execute Export POD V2", type="primary"):
+        cleanup_output_dir(output_dir)
+        st.session_state["download_results"].pop("pod_v2", None)
         overall_text = st.empty()
         overall_bar = st.progress(0.0)
         file_text = st.empty()
@@ -783,6 +852,8 @@ def render_pod_by_awb_tab(username: str, password: str, pin: str) -> None:
         max_workers = st.number_input("Parallel workers", min_value=1, max_value=12, value=DEFAULT_MAX_WORKERS, step=1, key="pod_by_awb_max_workers")
 
     if st.button("Execute POD BY AWB Export", type="primary"):
+        cleanup_output_dir(output_dir)
+        st.session_state["download_results"].pop("pod_by_awb", None)
         overall_text = st.empty()
         overall_bar = st.progress(0.0)
         file_text = st.empty()
