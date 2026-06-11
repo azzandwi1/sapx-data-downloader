@@ -355,6 +355,7 @@ def _poll_pod_v2_process(
     chunk_total: int,
 ) -> dict:
     deadline = time.monotonic() + poll_timeout
+    started_at = time.monotonic()
     attempt = 0
     last_error: Exception | None = None
 
@@ -378,6 +379,11 @@ def _poll_pod_v2_process(
                     "chunk_index": chunk_index,
                     "chunk_total": chunk_total,
                     "message": f"Process {process_id} | rowstate={rowstate} | status={status_message}",
+                    "process_id": process_id,
+                    "rowstate": rowstate,
+                    "status_message": status_message,
+                    "elapsed_seconds": min(time.monotonic() - started_at, poll_timeout),
+                    "timeout_seconds": poll_timeout,
                 },
             )
             if rowstate == "2":

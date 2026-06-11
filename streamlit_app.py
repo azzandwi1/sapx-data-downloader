@@ -179,7 +179,7 @@ def make_progress_callback(overall_bar, overall_text, file_bar, file_text):
                 label = f"Batch {current}/{total}: {from_date} s/d {to_date}"
             overall_text.write(label)
             file_bar.progress(0.0)
-            file_text.write("Memulai download file...")
+            file_text.write("Menyiapkan proses...")
             state["unknown_file_name"] = None
             state["unknown_tick"] = 0
         elif payload["stage"] == "file":
@@ -209,7 +209,16 @@ def make_progress_callback(overall_bar, overall_text, file_bar, file_text):
                 f"{file_label} | {byte_text} bytes | {payload['speed_text']}"
             )
         elif payload["stage"] == "status":
-            file_text.write(payload["message"])
+            elapsed = payload.get("elapsed_seconds")
+            timeout_seconds = payload.get("timeout_seconds")
+            if timeout_seconds:
+                progress_value = max(0.0, min(0.98, float(elapsed or 0) / float(timeout_seconds)))
+                file_bar.progress(progress_value)
+                file_text.write(
+                    f"{payload['message']} | menunggu server {int(elapsed or 0)} / {int(timeout_seconds)} detik"
+                )
+            else:
+                file_text.write(payload["message"])
         elif payload["stage"] == "retry":
             file_text.write(
                 f"Retry {payload['attempt']}/{payload['max_retries']} | {payload['message']}"
