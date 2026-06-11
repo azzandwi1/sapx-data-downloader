@@ -75,7 +75,7 @@ def hydrate_remembered_credentials(cookie_manager: stx.CookieManager) -> None:
     if remembered:
         st.session_state["username"] = cookies.get(f"{COOKIE_PREFIX}_username") or ""
         st.session_state["password"] = cookies.get(f"{COOKIE_PREFIX}_password") or ""
-        st.session_state["pin"] = cookies.get(f"{COOKIE_PREFIX}_pin") or ""
+        st.session_state.setdefault("pin", "")
     else:
         st.session_state.setdefault("username", "")
         st.session_state.setdefault("password", "")
@@ -87,7 +87,6 @@ def persist_remembered_credentials(
     cookie_manager: stx.CookieManager,
     username: str,
     password: str,
-    pin: str,
     remember_me: bool,
 ) -> None:
     if remember_me:
@@ -97,7 +96,6 @@ def persist_remembered_credentials(
                 f"{COOKIE_PREFIX}_remember_me": "1",
                 f"{COOKIE_PREFIX}_username": username,
                 f"{COOKIE_PREFIX}_password": password,
-                f"{COOKIE_PREFIX}_pin": pin,
             },
             expires_at=expires_at,
             same_site="lax",
@@ -110,7 +108,6 @@ def clear_remembered_credentials(cookie_manager: stx.CookieManager) -> None:
     cookie_manager.delete(f"{COOKIE_PREFIX}_remember_me", key=f"{COOKIE_PREFIX}_delete_remember")
     cookie_manager.delete(f"{COOKIE_PREFIX}_username", key=f"{COOKIE_PREFIX}_delete_username")
     cookie_manager.delete(f"{COOKIE_PREFIX}_password", key=f"{COOKIE_PREFIX}_delete_password")
-    cookie_manager.delete(f"{COOKIE_PREFIX}_pin", key=f"{COOKIE_PREFIX}_delete_pin")
 
 
 def option_map(options: list[dict]) -> dict[str, str]:
@@ -304,7 +301,7 @@ def render_sidebar() -> tuple[str, str, str]:
         if st.button("Load Filters", use_container_width=True):
             try:
                 connect_and_load_filters(username, password, pin)
-                persist_remembered_credentials(cookie_manager, username, password, pin, remember_me)
+                persist_remembered_credentials(cookie_manager, username, password, remember_me)
                 st.success("Filter berhasil dimuat.")
             except Exception as exc:  # noqa: BLE001
                 st.error(str(exc))
@@ -316,7 +313,7 @@ def render_sidebar() -> tuple[str, str, str]:
             st.session_state["remember_me"] = False
             st.success("Login tersimpan di browser ini sudah dihapus.")
             st.rerun()
-        st.caption("Kredensial default dikosongkan. Jika `Ingat saya` dicentang, data login disimpan di browser user ini saja.")
+        st.caption("Kredensial default dikosongkan. Jika `Ingat saya` dicentang, hanya username dan password yang disimpan di browser user ini. PIN tetap perlu diisi manual.")
     return username, password, pin
 
 
