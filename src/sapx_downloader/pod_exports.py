@@ -611,9 +611,12 @@ def run_pod_by_awb_batches(
                 "label": f"Chunk AWB {index}/{len(chunks)} | {len(awb_chunk)} AWB",
             },
         )
+        # The report02 endpoint silently returns an empty workbook if textarea lines
+        # are sent with LF only. Browser form submission normalizes textarea content
+        # to CRLF, so mirror that behavior exactly.
         payload = {
-            "key": key,
-            "val": "\n".join(awb_chunk),
+            "key": key or "a.awb_no",
+            "val": "\r\n".join(awb_chunk),
         }
 
         last_error: Exception | None = None
@@ -621,8 +624,15 @@ def run_pod_by_awb_batches(
             try:
                 with session.post(
                     POD_BY_AWB_EXPORT_URL,
-                    data=payload,
-                    headers={"Referer": POD_BY_AWB_URL},
+                    files={
+                        "key": (None, payload["key"]),
+                        "val": (None, payload["val"]),
+                    },
+                    headers={
+                        "Origin": BASE_URL,
+                        "Referer": f"{BASE_URL}/",
+                        "Upgrade-Insecure-Requests": "1",
+                    },
                     stream=True,
                     timeout=(30, timeout),
                 ) as response:
