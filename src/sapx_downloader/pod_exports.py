@@ -1,6 +1,7 @@
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from email.message import Message
@@ -27,6 +28,7 @@ POD_REPORT_V2_DOWNLOAD_ROOT = "https://report-js.coresyssap.com/download_report"
 POD_BY_AWB_URL = f"{BASE_URL}/report/pod_by_awb"
 POD_BY_AWB_EXPORT_URL = "https://report02-aws-jkt.coresyssap.com/report_pod/export_report_pod_by_awb/"
 DEFAULT_TIMEOUT = 45 * 60
+DEFAULT_MAX_WORKERS = 4
 
 
 @dataclass
@@ -62,6 +64,13 @@ class PodByAwbResult:
 def _emit(progress_callback: ProgressCallback | None, payload: dict) -> None:
     if progress_callback:
         progress_callback(payload)
+
+
+def _clone_session(session: requests.Session) -> requests.Session:
+    cloned = requests.Session()
+    cloned.headers.update(session.headers)
+    cloned.cookies.update(session.cookies)
+    return cloned
 
 
 def _format_date_for_pod(value: date) -> str:
@@ -589,6 +598,7 @@ def run_pod_by_awb_batches(
     timeout: int = DEFAULT_TIMEOUT,
     max_retries: int = 3,
     retry_delay: int = 5,
+    max_workers: int = DEFAULT_MAX_WORKERS,
     progress_callback: ProgressCallback | None = None,
 ) -> list[PodByAwbResult]:
     awbs = normalize_awb_lines(raw_awbs)
@@ -599,18 +609,10 @@ def run_pod_by_awb_batches(
 
     chunks = _chunk_awbs(awbs, awb_per_file)
     output_dir.mkdir(parents=True, exist_ok=True)
-    results: list[PodByAwbResult] = []
+    results_by_index: dict[int, PodByAwbResult] = {}
+    max_workers = max(1, min(max_workers, len(chunks) or 1))
 
-    for index, awb_chunk in enumerate(chunks, start=1):
-        _emit(
-            progress_callback,
-            {
-                "stage": "overall",
-                "chunk_index": index,
-                "chunk_total": len(chunks),
-                "label": f"Chunk AWB {index}/{len(chunks)} | {len(awb_chunk)} AWB",
-            },
-        )
+    def worker(index: int, awb_chunk: list[str]) -> PodByAwbResult:
         # The report02 endpoint silently returns an empty workbook if textarea lines
         # are sent with LF only. Browser form submission normalizes textarea content
         # to CRLF, so mirror that behavior exactly.
@@ -622,7 +624,8 @@ def run_pod_by_awb_batches(
         last_error: Exception | None = None
         for attempt in range(1, max_retries + 1):
             try:
-                with session.post(
+                worker_session = _clone_session(session)
+                with worker_session.post(
                     POD_BY_AWB_EXPORT_URL,
                     files={
                         "key": (None, payload["key"]),
@@ -652,52 +655,54 @@ def run_pod_by_awb_batches(
                                 continue
                             file_handle.write(block)
                             downloaded_bytes += len(block)
-                            elapsed = max(time.monotonic() - started_at, 0.001)
-                            speed = downloaded_bytes / elapsed
-                            _emit(
-                                progress_callback,
-                                {
-                                    "stage": "file",
-                                    "chunk_index": index,
-                                    "chunk_total": len(chunks),
-                                    "file_name": output_path.name,
-                                    "downloaded_bytes": downloaded_bytes,
-                                    "total_bytes": total_bytes,
-                                    "speed_text": f"{_format_bytes(int(speed))}/s",
-                                    "attempt": attempt,
-                                    "max_retries": max_retries,
-                                },
-                            )
-                    results.append(
-                        PodByAwbResult(
-                            chunk_index=index,
-                            chunk_total=len(chunks),
-                            awb_count=len(awb_chunk),
-                            first_awb=awb_chunk[0],
-                            last_awb=awb_chunk[-1],
-                            saved_path=str(output_path),
-                            file_size=output_path.stat().st_size,
-                            data_row_count=_count_xlsx_data_rows(output_path),
-                        )
+                    return PodByAwbResult(
+                        chunk_index=index,
+                        chunk_total=len(chunks),
+                        awb_count=len(awb_chunk),
+                        first_awb=awb_chunk[0],
+                        last_awb=awb_chunk[-1],
+                        saved_path=str(output_path),
+                        file_size=output_path.stat().st_size,
+                        data_row_count=_count_xlsx_data_rows(output_path),
                     )
-                    break
             except (requests.Timeout, requests.ConnectionError, requests.HTTPError, RuntimeError) as exc:
                 last_error = exc
-                _emit(
-                    progress_callback,
-                    {
-                        "stage": "retry",
-                        "chunk_index": index,
-                        "chunk_total": len(chunks),
-                        "attempt": attempt,
-                        "max_retries": max_retries,
-                        "message": str(exc),
-                    },
-                )
                 if attempt < max_retries:
                     time.sleep(retry_delay)
         else:
             if last_error:
                 raise last_error
             raise RuntimeError("Export POD BY AWB gagal tanpa exception yang tertangkap.")
-    return results
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(worker, index, awb_chunk): index
+            for index, awb_chunk in enumerate(chunks, start=1)
+        }
+        completed = 0
+        for future in as_completed(future_map):
+            result = future.result()
+            completed += 1
+            results_by_index[result.chunk_index] = result
+            _emit(
+                progress_callback,
+                {
+                    "stage": "file",
+                    "chunk_index": result.chunk_index,
+                    "chunk_total": len(chunks),
+                    "file_name": Path(result.saved_path).name,
+                    "downloaded_bytes": result.file_size,
+                    "total_bytes": result.file_size,
+                    "speed_text": "parallel",
+                },
+            )
+            _emit(
+                progress_callback,
+                {
+                    "stage": "overall",
+                    "chunk_index": completed,
+                    "chunk_total": len(chunks),
+                    "label": f"Selesai {completed}/{len(chunks)} chunk AWB",
+                },
+            )
+    return [results_by_index[index] for index in sorted(results_by_index)]

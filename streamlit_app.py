@@ -32,6 +32,7 @@ from sapx_downloader.pickup_exports import (
 
 COOKIE_PREFIX = "sapx_downloader"
 DEFAULT_REQUEST_TIMEOUT = 45 * 60
+DEFAULT_MAX_WORKERS = 4
 
 
 st.set_page_config(page_title="SAPX Data Downloader", layout="wide")
@@ -362,11 +363,13 @@ def render_pickup_tab(username: str, password: str, pin: str) -> None:
             key="pickup_output_dir",
         )
 
-    runtime_col1, runtime_col2 = st.columns(2)
+    runtime_col1, runtime_col2, runtime_col3 = st.columns(3)
     with runtime_col1:
         timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=DEFAULT_REQUEST_TIMEOUT, step=30, key="pickup_timeout")
     with runtime_col2:
         retry_count = st.number_input("Retry saat timeout", min_value=1, value=3, step=1, key="pickup_retries")
+    with runtime_col3:
+        max_workers = st.number_input("Parallel workers", min_value=1, max_value=12, value=DEFAULT_MAX_WORKERS, step=1, key="pickup_max_workers")
 
     if st.button("Execute Pickup Export", type="primary"):
         if date_basis_value in ("0", "-"):
@@ -406,6 +409,7 @@ def render_pickup_tab(username: str, password: str, pin: str) -> None:
                 output_dir=Path(output_dir),
                 timeout=int(timeout_seconds),
                 max_retries=int(retry_count),
+                max_workers=int(max_workers),
                 progress_callback=progress_callback,
             )
             st.success(f"Selesai. {len(results)} file batch berhasil diunduh.")
@@ -478,11 +482,13 @@ def render_pickup_manual_tab(username: str, password: str, pin: str) -> None:
     with metric_col2:
         kilo = st.text_input("Kilo", value="-", key="pickup_manual_kilo")
 
-    runtime_col1, runtime_col2 = st.columns(2)
+    runtime_col1, runtime_col2, runtime_col3 = st.columns(3)
     with runtime_col1:
         timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=DEFAULT_REQUEST_TIMEOUT, step=30, key="pickup_manual_timeout")
     with runtime_col2:
         retry_count = st.number_input("Retry saat timeout", min_value=1, value=3, step=1, key="pickup_manual_retries")
+    with runtime_col3:
+        max_workers = st.number_input("Parallel workers", min_value=1, max_value=12, value=DEFAULT_MAX_WORKERS, step=1, key="pickup_manual_max_workers")
 
     if st.button("Execute Pickup Manual Export", type="primary"):
         if date_basis_value in ("0", "-"):
@@ -520,6 +526,7 @@ def render_pickup_manual_tab(username: str, password: str, pin: str) -> None:
                 output_dir=Path(output_dir),
                 timeout=int(timeout_seconds),
                 max_retries=int(retry_count),
+                max_workers=int(max_workers),
                 progress_callback=progress_callback,
             )
             st.success(f"Selesai. {len(results)} file batch berhasil diunduh.")
@@ -563,11 +570,13 @@ def render_monitoring_gateway_tab(username: str, password: str, pin: str) -> Non
     with date_col3:
         skip_existing = st.checkbox("Skip file yang sudah ada", value=True, key="gateway_skip_existing")
 
-    runtime_col1, runtime_col2 = st.columns(2)
+    runtime_col1, runtime_col2, runtime_col3 = st.columns(3)
     with runtime_col1:
         timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=DEFAULT_REQUEST_TIMEOUT, step=30, key="gateway_timeout")
     with runtime_col2:
         retry_count = st.number_input("Retry saat timeout", min_value=1, value=3, step=1, key="gateway_retries")
+    with runtime_col3:
+        max_workers = st.number_input("Parallel workers", min_value=1, max_value=12, value=DEFAULT_MAX_WORKERS, step=1, key="gateway_max_workers")
 
     if st.button("Execute Monitoring Proses Export", type="primary"):
         overall_text = st.empty()
@@ -591,6 +600,7 @@ def render_monitoring_gateway_tab(username: str, password: str, pin: str) -> Non
                 timeout=int(timeout_seconds),
                 skip_existing=skip_existing,
                 max_retries=int(retry_count),
+                max_workers=int(max_workers),
                 progress_callback=progress_callback,
             )
             st.success(f"Selesai. {len(results)} batch berhasil diproses.")
@@ -664,13 +674,15 @@ def render_pod_v2_tab(username: str, password: str, pin: str) -> None:
             key="pod_v2_output_dir",
         )
 
-    runtime_col1, runtime_col2, runtime_col3 = st.columns(3)
+    runtime_col1, runtime_col2, runtime_col3, runtime_col4 = st.columns(4)
     with runtime_col1:
         timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=DEFAULT_REQUEST_TIMEOUT, step=30, key="pod_v2_timeout")
     with runtime_col2:
         retry_count = st.number_input("Retry saat timeout", min_value=1, value=3, step=1, key="pod_v2_retries")
     with runtime_col3:
         poll_timeout = st.number_input("Maksimum tunggu proses (detik)", min_value=60, value=DEFAULT_REQUEST_TIMEOUT, step=30, key="pod_v2_poll_timeout")
+    with runtime_col4:
+        poll_interval = st.number_input("Interval cek status (detik)", min_value=1, max_value=30, value=2, step=1, key="pod_v2_poll_interval")
 
     if st.button("Execute Export POD V2", type="primary"):
         overall_text = st.empty()
@@ -716,6 +728,7 @@ def render_pod_v2_tab(username: str, password: str, pin: str) -> None:
                 output_dir=Path(output_dir),
                 timeout=int(timeout_seconds),
                 max_retries=int(retry_count),
+                poll_interval=int(poll_interval),
                 poll_timeout=int(poll_timeout),
                 progress_callback=progress_callback,
             )
@@ -746,13 +759,15 @@ def render_pod_by_awb_tab(username: str, password: str, pin: str) -> None:
         key="pod_by_awb_text",
     )
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         awb_per_file = st.number_input("Maksimum AWB per file", min_value=1, max_value=500, value=500, step=1, key="pod_by_awb_per_file")
     with col2:
         timeout_seconds = st.number_input("Read timeout per request (detik)", min_value=60, value=DEFAULT_REQUEST_TIMEOUT, step=30, key="pod_by_awb_timeout")
     with col3:
         retry_count = st.number_input("Retry saat timeout", min_value=1, value=3, step=1, key="pod_by_awb_retries")
+    with col4:
+        max_workers = st.number_input("Parallel workers", min_value=1, max_value=12, value=DEFAULT_MAX_WORKERS, step=1, key="pod_by_awb_max_workers")
 
     output_dir = st.text_input(
         "Output Folder",
@@ -777,6 +792,7 @@ def render_pod_by_awb_tab(username: str, password: str, pin: str) -> None:
                 awb_per_file=int(awb_per_file),
                 timeout=int(timeout_seconds),
                 max_retries=int(retry_count),
+                max_workers=int(max_workers),
                 progress_callback=progress_callback,
             )
             st.success(f"Selesai. {len(results)} file berhasil diunduh.")

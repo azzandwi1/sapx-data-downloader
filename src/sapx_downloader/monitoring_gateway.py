@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -23,6 +24,7 @@ MONITORING_GATEWAY_PAGE_URL = f"{BASE_URL}/report_monitoring/monitoring_gateway"
 DEFAULT_CHECKPOINT = "7"
 DEFAULT_BRANCH = os.getenv("CORESYS_BRANCH", "NASIONAL")
 DEFAULT_TIMEOUT = 45 * 60
+DEFAULT_MAX_WORKERS = 4
 
 
 @dataclass
@@ -285,6 +287,13 @@ def _emit(progress_callback: ProgressCallback | None, payload: dict) -> None:
         progress_callback(payload)
 
 
+def _clone_session(session: requests.Session) -> requests.Session:
+    cloned = requests.Session()
+    cloned.headers.update(session.headers)
+    cloned.cookies.update(session.cookies)
+    return cloned
+
+
 def sanitize_period_fragment(date_from: str, date_to: str) -> str:
     return f"{date_from.replace('-', '')}_{date_to.replace('-', '')}"
 
@@ -441,6 +450,7 @@ def run_monitoring_gateway_batches(
     skip_existing: bool = False,
     max_retries: int = 3,
     retry_delay: int = 5,
+    max_workers: int = DEFAULT_MAX_WORKERS,
     progress_callback: ProgressCallback | None = None,
 ) -> list[BatchDownloadResult]:
     chunks = split_date_range(start_date, end_date, batch_days)
@@ -479,21 +489,58 @@ def run_monitoring_gateway_batches(
             encoding="utf-8",
         )
 
-        for file_index, export in enumerate(exports, start=1):
-            _download_export_with_callback(
-                session=session,
+        worker_count = max(1, min(max_workers, len(exports) or 1))
+
+        def worker(file_index: int, export: DailyExport) -> Path:
+            return _download_export_with_callback(
+                session=_clone_session(session),
                 export=export,
                 out_dir=out_dir,
                 timeout=timeout,
                 skip_existing=skip_existing,
                 max_retries=max_retries,
                 retry_delay=retry_delay,
-                progress_callback=progress_callback,
+                progress_callback=None,
                 chunk_index=chunk_index,
                 chunk_total=len(chunks),
                 file_index=file_index,
                 file_total=len(exports),
             )
+
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_map = {
+                executor.submit(worker, file_index, export): (file_index, export)
+                for file_index, export in enumerate(exports, start=1)
+            }
+            completed_files = 0
+            for future in as_completed(future_map):
+                file_index, _export = future_map[future]
+                path = future.result()
+                completed_files += 1
+                file_size = path.stat().st_size if path.exists() else 0
+                _emit(
+                    progress_callback,
+                    {
+                        "stage": "file",
+                        "chunk_index": chunk_index,
+                        "chunk_total": len(chunks),
+                        "file_index": completed_files,
+                        "file_total": len(exports),
+                        "file_name": path.name,
+                        "downloaded_bytes": file_size,
+                        "total_bytes": file_size,
+                        "speed_text": "parallel",
+                    },
+                )
+                _emit(
+                    progress_callback,
+                    {
+                        "stage": "overall",
+                        "chunk_index": chunk_index,
+                        "chunk_total": len(chunks),
+                        "label": f"Batch {chunk_index}/{len(chunks)} | file selesai {completed_files}/{len(exports)}",
+                    },
+                )
 
         results.append(
             BatchDownloadResult(

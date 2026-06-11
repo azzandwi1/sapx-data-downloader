@@ -1,5 +1,6 @@
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -19,6 +20,7 @@ ProgressCallback = Callable[[dict], None]
 PICKUP_MONITORING_URL = f"{BASE_URL}/pickup/monitoring_list"
 PICKUP_MANUAL_MONITORING_URL = f"{BASE_URL}/pickup_manual/monitoring_list"
 DEFAULT_TIMEOUT = 45 * 60
+DEFAULT_MAX_WORKERS = 4
 
 
 @dataclass
@@ -57,6 +59,13 @@ def _format_bytes(num_bytes: int) -> str:
 def _emit(progress_callback: ProgressCallback | None, payload: dict) -> None:
     if progress_callback:
         progress_callback(payload)
+
+
+def _clone_session(session: requests.Session) -> requests.Session:
+    cloned = requests.Session()
+    cloned.headers.update(session.headers)
+    cloned.cookies.update(session.cookies)
+    return cloned
 
 
 def split_date_range(start_date: date, end_date: date, batch_days: int) -> list[tuple[date, date]]:
@@ -301,12 +310,15 @@ def run_pickup_export_batches(
     timeout: int = DEFAULT_TIMEOUT,
     max_retries: int = 3,
     retry_delay: int = 5,
+    max_workers: int = DEFAULT_MAX_WORKERS,
     progress_callback: ProgressCallback | None = None,
 ) -> list[ChunkResult]:
     chunks = split_date_range(start_date, end_date, batch_days)
     output_dir.mkdir(parents=True, exist_ok=True)
-    results: list[ChunkResult] = []
+    results_by_index: dict[int, ChunkResult] = {}
+    max_workers = max(1, min(max_workers, len(chunks) or 1))
 
+    jobs = []
     for index, (chunk_start, chunk_end) in enumerate(chunks, start=1):
         from_text = _format_date(chunk_start)
         to_text = _format_date(chunk_end)
@@ -314,29 +326,60 @@ def run_pickup_export_batches(
         export_label = sanitize_name(export_kind)
         output_path = output_dir / f"pickup_{export_label}_{chunk_start.isoformat()}_{chunk_end.isoformat()}.xlsx"
         _emit(progress_callback, {"stage": "overall", "chunk_index": index, "chunk_total": len(chunks), "from_date": from_text, "to_date": to_text})
+        jobs.append((index, from_text, to_text, url, output_path))
+
+    def worker(job: tuple[int, str, str, str, Path]) -> ChunkResult:
+        index, from_text, to_text, url, output_path = job
         file_size = _download_file(
-            session,
+            _clone_session(session),
             url,
             output_path,
             timeout,
             max_retries,
             retry_delay,
-            progress_callback,
+            None,
             index,
             len(chunks),
         )
-        results.append(
-            ChunkResult(
-                chunk_index=index,
-                chunk_total=len(chunks),
-                from_date=from_text,
-                to_date=to_text,
-                export_url=url,
-                saved_path=str(output_path),
-                file_size=file_size,
-            )
+        return ChunkResult(
+            chunk_index=index,
+            chunk_total=len(chunks),
+            from_date=from_text,
+            to_date=to_text,
+            export_url=url,
+            saved_path=str(output_path),
+            file_size=file_size,
         )
-    return results
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(worker, job): job for job in jobs}
+        completed = 0
+        for future in as_completed(future_map):
+            result = future.result()
+            completed += 1
+            results_by_index[result.chunk_index] = result
+            _emit(
+                progress_callback,
+                {
+                    "stage": "file",
+                    "chunk_index": result.chunk_index,
+                    "chunk_total": len(chunks),
+                    "file_name": Path(result.saved_path).name,
+                    "downloaded_bytes": result.file_size,
+                    "total_bytes": result.file_size,
+                    "speed_text": "parallel",
+                },
+            )
+            _emit(
+                progress_callback,
+                {
+                    "stage": "overall",
+                    "chunk_index": completed,
+                    "chunk_total": len(chunks),
+                    "label": f"Selesai {completed}/{len(chunks)} batch",
+                },
+            )
+    return [results_by_index[index] for index in sorted(results_by_index)]
 
 
 def run_pickup_manual_export_batches(
@@ -350,12 +393,15 @@ def run_pickup_manual_export_batches(
     timeout: int = DEFAULT_TIMEOUT,
     max_retries: int = 3,
     retry_delay: int = 5,
+    max_workers: int = DEFAULT_MAX_WORKERS,
     progress_callback: ProgressCallback | None = None,
 ) -> list[ChunkResult]:
     chunks = split_date_range(start_date, end_date, batch_days)
     output_dir.mkdir(parents=True, exist_ok=True)
-    results: list[ChunkResult] = []
+    results_by_index: dict[int, ChunkResult] = {}
+    max_workers = max(1, min(max_workers, len(chunks) or 1))
 
+    jobs = []
     for index, (chunk_start, chunk_end) in enumerate(chunks, start=1):
         from_text = _format_date(chunk_start)
         to_text = _format_date(chunk_end)
@@ -363,29 +409,60 @@ def run_pickup_manual_export_batches(
         export_label = sanitize_name(export_kind)
         output_path = output_dir / f"pickup_manual_{export_label}_{chunk_start.isoformat()}_{chunk_end.isoformat()}.xlsx"
         _emit(progress_callback, {"stage": "overall", "chunk_index": index, "chunk_total": len(chunks), "from_date": from_text, "to_date": to_text})
+        jobs.append((index, from_text, to_text, url, output_path))
+
+    def worker(job: tuple[int, str, str, str, Path]) -> ChunkResult:
+        index, from_text, to_text, url, output_path = job
         file_size = _download_file(
-            session,
+            _clone_session(session),
             url,
             output_path,
             timeout,
             max_retries,
             retry_delay,
-            progress_callback,
+            None,
             index,
             len(chunks),
         )
-        results.append(
-            ChunkResult(
-                chunk_index=index,
-                chunk_total=len(chunks),
-                from_date=from_text,
-                to_date=to_text,
-                export_url=url,
-                saved_path=str(output_path),
-                file_size=file_size,
-            )
+        return ChunkResult(
+            chunk_index=index,
+            chunk_total=len(chunks),
+            from_date=from_text,
+            to_date=to_text,
+            export_url=url,
+            saved_path=str(output_path),
+            file_size=file_size,
         )
-    return results
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(worker, job): job for job in jobs}
+        completed = 0
+        for future in as_completed(future_map):
+            result = future.result()
+            completed += 1
+            results_by_index[result.chunk_index] = result
+            _emit(
+                progress_callback,
+                {
+                    "stage": "file",
+                    "chunk_index": result.chunk_index,
+                    "chunk_total": len(chunks),
+                    "file_name": Path(result.saved_path).name,
+                    "downloaded_bytes": result.file_size,
+                    "total_bytes": result.file_size,
+                    "speed_text": "parallel",
+                },
+            )
+            _emit(
+                progress_callback,
+                {
+                    "stage": "overall",
+                    "chunk_index": completed,
+                    "chunk_total": len(chunks),
+                    "label": f"Selesai {completed}/{len(chunks)} batch",
+                },
+            )
+    return [results_by_index[index] for index in sorted(results_by_index)]
 
 
 def parse_date_string(value: str) -> date:
