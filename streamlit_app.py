@@ -1,6 +1,6 @@
 import sys
 from io import BytesIO
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -33,6 +33,7 @@ from sapx_downloader.pickup_exports import (
 COOKIE_PREFIX = "sapx_downloader"
 DEFAULT_REQUEST_TIMEOUT = 45 * 60
 DEFAULT_MAX_WORKERS = 4
+REMEMBER_ME_DAYS = 30
 
 
 st.set_page_config(page_title="SAPX Data Downloader", layout="wide")
@@ -59,13 +60,22 @@ def init_state() -> None:
 def hydrate_remembered_credentials(cookie_manager: stx.CookieManager) -> None:
     if st.session_state.get("remember_me_loaded"):
         return
-    remembered_flag = cookie_manager.get(f"{COOKIE_PREFIX}_remember_me")
+
+    cookies = cookie_manager.get_all(key=f"{COOKIE_PREFIX}_get_all") or {}
+    remembered_cookie = f"{COOKIE_PREFIX}_remember_me"
+    if remembered_cookie not in cookies:
+        st.session_state.setdefault("username", "")
+        st.session_state.setdefault("password", "")
+        st.session_state.setdefault("pin", "")
+        return
+
+    remembered_flag = cookies.get(remembered_cookie)
     remembered = remembered_flag == "1"
     st.session_state["remember_me"] = remembered
     if remembered:
-        st.session_state.setdefault("username", cookie_manager.get(f"{COOKIE_PREFIX}_username") or "")
-        st.session_state.setdefault("password", cookie_manager.get(f"{COOKIE_PREFIX}_password") or "")
-        st.session_state.setdefault("pin", cookie_manager.get(f"{COOKIE_PREFIX}_pin") or "")
+        st.session_state["username"] = cookies.get(f"{COOKIE_PREFIX}_username") or ""
+        st.session_state["password"] = cookies.get(f"{COOKIE_PREFIX}_password") or ""
+        st.session_state["pin"] = cookies.get(f"{COOKIE_PREFIX}_pin") or ""
     else:
         st.session_state.setdefault("username", "")
         st.session_state.setdefault("password", "")
@@ -81,19 +91,26 @@ def persist_remembered_credentials(
     remember_me: bool,
 ) -> None:
     if remember_me:
-        cookie_manager.set(f"{COOKIE_PREFIX}_remember_me", "1")
-        cookie_manager.set(f"{COOKIE_PREFIX}_username", username)
-        cookie_manager.set(f"{COOKIE_PREFIX}_password", password)
-        cookie_manager.set(f"{COOKIE_PREFIX}_pin", pin)
+        expires_at = datetime.now() + timedelta(days=REMEMBER_ME_DAYS)
+        cookie_manager.batch_set(
+            {
+                f"{COOKIE_PREFIX}_remember_me": "1",
+                f"{COOKIE_PREFIX}_username": username,
+                f"{COOKIE_PREFIX}_password": password,
+                f"{COOKIE_PREFIX}_pin": pin,
+            },
+            expires_at=expires_at,
+            same_site="lax",
+        )
     else:
         clear_remembered_credentials(cookie_manager)
 
 
 def clear_remembered_credentials(cookie_manager: stx.CookieManager) -> None:
-    cookie_manager.delete(f"{COOKIE_PREFIX}_remember_me")
-    cookie_manager.delete(f"{COOKIE_PREFIX}_username")
-    cookie_manager.delete(f"{COOKIE_PREFIX}_password")
-    cookie_manager.delete(f"{COOKIE_PREFIX}_pin")
+    cookie_manager.delete(f"{COOKIE_PREFIX}_remember_me", key=f"{COOKIE_PREFIX}_delete_remember")
+    cookie_manager.delete(f"{COOKIE_PREFIX}_username", key=f"{COOKIE_PREFIX}_delete_username")
+    cookie_manager.delete(f"{COOKIE_PREFIX}_password", key=f"{COOKIE_PREFIX}_delete_password")
+    cookie_manager.delete(f"{COOKIE_PREFIX}_pin", key=f"{COOKIE_PREFIX}_delete_pin")
 
 
 def option_map(options: list[dict]) -> dict[str, str]:
