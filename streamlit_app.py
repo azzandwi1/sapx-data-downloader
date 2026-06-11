@@ -783,6 +783,11 @@ def render_pod_by_awb_tab(username: str, password: str, pin: str) -> None:
             st.session_state["download_results"]["pod_by_awb"] = [
                 str(path) for path in normalize_download_paths(results, "saved_path")
             ]
+            if results and all(getattr(item, "data_row_count", 0) == 0 for item in results):
+                st.warning(
+                    "File berhasil dibuat, tetapi SAPX mengembalikan 0 baris data. "
+                    "Biasanya ini berarti AWB tidak ditemukan oleh endpoint `POD BY AWB`."
+                )
             st.dataframe([result.__dict__ for result in results], width="stretch")
         except Exception as exc:  # noqa: BLE001
             st.error(str(exc))

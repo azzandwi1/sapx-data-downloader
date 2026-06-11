@@ -6,6 +6,8 @@ from datetime import date, timedelta
 from email.message import Message
 from pathlib import Path
 from typing import Callable
+from xml.etree import ElementTree
+from zipfile import ZipFile
 
 import requests
 
@@ -54,6 +56,7 @@ class PodByAwbResult:
     last_awb: str
     saved_path: str
     file_size: int
+    data_row_count: int
 
 
 def _emit(progress_callback: ProgressCallback | None, payload: dict) -> None:
@@ -243,6 +246,27 @@ def _extract_filename_from_headers(headers: requests.structures.CaseInsensitiveD
         if match:
             file_name = match.group(1)
     return file_name
+
+
+def _count_xlsx_data_rows(path: Path, header_rows: int = 3) -> int:
+    namespace = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with ZipFile(path) as archive:
+        sheet_xml = archive.read("xl/worksheets/sheet1.xml")
+    root = ElementTree.fromstring(sheet_xml)
+    rows = root.findall(".//main:sheetData/main:row", namespace)
+    data_rows = 0
+    for row in rows:
+        row_index = int(row.attrib.get("r", "0") or "0")
+        if row_index <= header_rows:
+            continue
+        has_value = False
+        for cell in row.findall("main:c", namespace):
+            if cell.find("main:v", namespace) is not None or cell.find("main:is", namespace) is not None:
+                has_value = True
+                break
+        if has_value:
+            data_rows += 1
+    return data_rows
 
 
 def _download_stream_to_path(
@@ -643,6 +667,7 @@ def run_pod_by_awb_batches(
                             last_awb=awb_chunk[-1],
                             saved_path=str(output_path),
                             file_size=output_path.stat().st_size,
+                            data_row_count=_count_xlsx_data_rows(output_path),
                         )
                     )
                     break
