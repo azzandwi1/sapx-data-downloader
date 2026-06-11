@@ -1,6 +1,8 @@
 import sys
+from io import BytesIO
 from datetime import date
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import extra_streamlit_components as stx
 import streamlit as st
@@ -50,6 +52,7 @@ def init_state() -> None:
     st.session_state.setdefault("pod_customer_results", [])
     st.session_state.setdefault("remember_me", False)
     st.session_state.setdefault("remember_me_loaded", False)
+    st.session_state.setdefault("download_results", {})
 
 
 def hydrate_remembered_credentials(cookie_manager: stx.CookieManager) -> None:
@@ -199,6 +202,72 @@ def make_progress_callback(overall_bar, overall_text, file_bar, file_text):
     return callback
 
 
+def build_zip_bytes(files: list[Path]) -> bytes:
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as zip_file:
+        for file_path in files:
+            zip_file.writestr(file_path.name, file_path.read_bytes())
+    return buffer.getvalue()
+
+
+def normalize_download_paths(items: list[object], key: str) -> list[Path]:
+    paths: list[Path] = []
+    for item in items:
+        raw_value = getattr(item, key, "")
+        if raw_value:
+            path = Path(raw_value)
+            if path.exists() and path.is_file():
+                paths.append(path)
+    return paths
+
+
+def collect_monitoring_gateway_paths(items: list[object]) -> list[Path]:
+    paths: list[Path] = []
+    for item in items:
+        output_dir = Path(getattr(item, "output_dir", ""))
+        if output_dir.exists() and output_dir.is_dir():
+            paths.extend(sorted(output_dir.glob("*.xlsx")))
+    return paths
+
+
+def render_download_browser(result_key: str, title: str) -> None:
+    files: list[str] = st.session_state["download_results"].get(result_key, [])
+    if not files:
+        return
+
+    paths = [Path(file_path) for file_path in files if Path(file_path).exists()]
+    if not paths:
+        return
+
+    st.markdown(f"**{title}**")
+    st.caption("File di bawah bisa langsung diunduh ke browser Anda. Jika ingin semua sekaligus, gunakan ZIP.")
+    zip_bytes = build_zip_bytes(paths)
+    st.download_button(
+        "Download Semua sebagai ZIP",
+        data=zip_bytes,
+        file_name=f"{result_key}.zip",
+        mime="application/zip",
+        key=f"{result_key}_zip_download",
+        use_container_width=True,
+    )
+
+    for index, path in enumerate(paths, start=1):
+        col1, col2, col3 = st.columns([5, 2, 2])
+        with col1:
+            st.write(f"{index}. `{path.name}`")
+        with col2:
+            st.write(f"{path.stat().st_size:,} bytes")
+        with col3:
+            st.download_button(
+                "Download",
+                data=path.read_bytes(),
+                file_name=path.name,
+                mime="application/octet-stream",
+                key=f"{result_key}_file_{index}",
+                use_container_width=True,
+            )
+
+
 def render_sidebar() -> tuple[str, str, str]:
     cookie_manager = get_cookie_manager()
     hydrate_remembered_credentials(cookie_manager)
@@ -340,9 +409,13 @@ def render_pickup_tab(username: str, password: str, pin: str) -> None:
                 progress_callback=progress_callback,
             )
             st.success(f"Selesai. {len(results)} file batch berhasil diunduh.")
+            st.session_state["download_results"]["pickup_monitoring"] = [
+                str(path) for path in normalize_download_paths(results, "saved_path")
+            ]
             st.dataframe([result.__dict__ for result in results], width="stretch")
         except Exception as exc:  # noqa: BLE001
             st.error(str(exc))
+    render_download_browser("pickup_monitoring", "Hasil Pickup Monitoring")
 
 
 def render_pickup_manual_tab(username: str, password: str, pin: str) -> None:
@@ -450,9 +523,13 @@ def render_pickup_manual_tab(username: str, password: str, pin: str) -> None:
                 progress_callback=progress_callback,
             )
             st.success(f"Selesai. {len(results)} file batch berhasil diunduh.")
+            st.session_state["download_results"]["pickup_manual_monitoring"] = [
+                str(path) for path in normalize_download_paths(results, "saved_path")
+            ]
             st.dataframe([result.__dict__ for result in results], width="stretch")
         except Exception as exc:  # noqa: BLE001
             st.error(str(exc))
+    render_download_browser("pickup_manual_monitoring", "Hasil Pickup Manual Monitoring")
 
 
 def render_monitoring_gateway_tab(username: str, password: str, pin: str) -> None:
@@ -517,9 +594,13 @@ def render_monitoring_gateway_tab(username: str, password: str, pin: str) -> Non
                 progress_callback=progress_callback,
             )
             st.success(f"Selesai. {len(results)} batch berhasil diproses.")
+            st.session_state["download_results"]["monitoring_gateway"] = [
+                str(path) for path in collect_monitoring_gateway_paths(results)
+            ]
             st.dataframe([result.__dict__ for result in results], width="stretch")
         except Exception as exc:  # noqa: BLE001
             st.error(str(exc))
+    render_download_browser("monitoring_gateway", "Hasil Monitoring Proses")
 
 
 def render_pod_v2_tab(username: str, password: str, pin: str) -> None:
@@ -639,9 +720,13 @@ def render_pod_v2_tab(username: str, password: str, pin: str) -> None:
                 progress_callback=progress_callback,
             )
             st.success(f"Selesai. {len(results)} file batch berhasil diunduh.")
+            st.session_state["download_results"]["pod_v2"] = [
+                str(path) for path in normalize_download_paths(results, "saved_path")
+            ]
             st.dataframe([result.__dict__ for result in results], width="stretch")
         except Exception as exc:  # noqa: BLE001
             st.error(str(exc))
+    render_download_browser("pod_v2", "Hasil Laporan POD V2")
 
 
 def render_pod_by_awb_tab(username: str, password: str, pin: str) -> None:
@@ -695,9 +780,13 @@ def render_pod_by_awb_tab(username: str, password: str, pin: str) -> None:
                 progress_callback=progress_callback,
             )
             st.success(f"Selesai. {len(results)} file berhasil diunduh.")
+            st.session_state["download_results"]["pod_by_awb"] = [
+                str(path) for path in normalize_download_paths(results, "saved_path")
+            ]
             st.dataframe([result.__dict__ for result in results], width="stretch")
         except Exception as exc:  # noqa: BLE001
             st.error(str(exc))
+    render_download_browser("pod_by_awb", "Hasil POD BY AWB")
 
 
 def main() -> None:
