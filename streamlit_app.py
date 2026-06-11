@@ -269,6 +269,12 @@ def render_download_browser(result_key: str, title: str) -> None:
             )
 
 
+def internal_output_dir(name: str) -> Path:
+    path = PROJECT_ROOT / "downloads" / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def render_sidebar() -> tuple[str, str, str]:
     cookie_manager = get_cookie_manager()
     hydrate_remembered_credentials(cookie_manager)
@@ -351,17 +357,13 @@ def render_pickup_tab(username: str, password: str, pin: str) -> None:
             "pickup_export_kind",
         )
 
-    metric_col1, metric_col2, metric_col3 = st.columns(3)
+    output_dir = internal_output_dir("pickup_monitoring")
+
+    metric_col1, metric_col2 = st.columns(2)
     with metric_col1:
         koli = st.text_input("Koli", value="-", key="pickup_koli")
     with metric_col2:
         kilo = st.text_input("Kilo", value="-", key="pickup_kilo")
-    with metric_col3:
-        output_dir = st.text_input(
-            "Output Folder",
-            value=str(PROJECT_ROOT / "downloads" / "pickup_monitoring"),
-            key="pickup_output_dir",
-        )
 
     runtime_col1, runtime_col2, runtime_col3 = st.columns(3)
     with runtime_col1:
@@ -406,7 +408,7 @@ def render_pickup_tab(username: str, password: str, pin: str) -> None:
                 start_date=start_date,
                 end_date=end_date,
                 batch_days=int(batch_days),
-                output_dir=Path(output_dir),
+                output_dir=output_dir,
                 timeout=int(timeout_seconds),
                 max_retries=int(retry_count),
                 max_workers=int(max_workers),
@@ -462,19 +464,15 @@ def render_pickup_manual_tab(username: str, password: str, pin: str) -> None:
             "pickup_manual_export_kind",
         )
 
-    date_col1, date_col2, date_col3, date_col4 = st.columns(4)
+    output_dir = internal_output_dir("pickup_manual_monitoring")
+
+    date_col1, date_col2, date_col3 = st.columns(3)
     with date_col1:
         start_date = st.date_input("From", value=date.today(), key="pickup_manual_from")
     with date_col2:
         end_date = st.date_input("To", value=date.today(), key="pickup_manual_to")
     with date_col3:
         batch_days = st.number_input("Batch per berapa hari", min_value=1, value=5, step=1, key="pickup_manual_batch_days")
-    with date_col4:
-        output_dir = st.text_input(
-            "Output Folder",
-            value=str(PROJECT_ROOT / "downloads" / "pickup_manual_monitoring"),
-            key="pickup_manual_output_dir",
-        )
 
     metric_col1, metric_col2 = st.columns(2)
     with metric_col1:
@@ -523,7 +521,7 @@ def render_pickup_manual_tab(username: str, password: str, pin: str) -> None:
                 start_date=start_date,
                 end_date=end_date,
                 batch_days=int(batch_days),
-                output_dir=Path(output_dir),
+                output_dir=output_dir,
                 timeout=int(timeout_seconds),
                 max_retries=int(retry_count),
                 max_workers=int(max_workers),
@@ -546,6 +544,7 @@ def render_monitoring_gateway_tab(username: str, password: str, pin: str) -> Non
     if not meta:
         st.info("Klik `Load Filters` di sidebar untuk memuat pilihan Check Point dan Cabang dari website.")
         return
+    output_dir = internal_output_dir("monitoring_gateway")
 
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -556,12 +555,6 @@ def render_monitoring_gateway_tab(username: str, password: str, pin: str) -> Non
         to_time = st.text_input("Sampai Jam", value="23:59:59", key="gateway_to_time")
     with col3:
         batch_days = st.number_input("Batch per berapa hari", min_value=1, value=5, step=1, key="gateway_batch_days")
-        output_dir = st.text_input(
-            "Output Folder",
-            value=str(PROJECT_ROOT / "downloads" / "monitoring_gateway"),
-            key="gateway_output_dir",
-        )
-
     date_col1, date_col2, date_col3 = st.columns(3)
     with date_col1:
         start_date = st.date_input("From", value=date.today(), key="gateway_from")
@@ -596,7 +589,7 @@ def render_monitoring_gateway_tab(username: str, password: str, pin: str) -> Non
                 start_date=start_date,
                 end_date=end_date,
                 batch_days=int(batch_days),
-                output_root=Path(output_dir),
+                output_root=output_dir,
                 timeout=int(timeout_seconds),
                 skip_existing=skip_existing,
                 max_retries=int(retry_count),
@@ -620,6 +613,7 @@ def render_pod_v2_tab(username: str, password: str, pin: str) -> None:
     if not meta:
         st.info("Klik `Load Filters` di sidebar untuk memuat pilihan filter Laporan POD V2 dari website.")
         return
+    output_dir = internal_output_dir("pod_v2")
 
     search_col, select_col = st.columns([1, 2])
     with search_col:
@@ -668,11 +662,6 @@ def render_pod_v2_tab(username: str, password: str, pin: str) -> None:
         insurance = select_value("Asuransi", meta["opt_insurance"], "pod_v2_insurance")
     with col6:
         batch_days = st.number_input("Batch per berapa hari", min_value=1, value=5, step=1, key="pod_v2_batch_days")
-        output_dir = st.text_input(
-            "Output Folder",
-            value=str(PROJECT_ROOT / "downloads" / "pod_v2"),
-            key="pod_v2_output_dir",
-        )
 
     runtime_col1, runtime_col2, runtime_col3, runtime_col4 = st.columns(4)
     with runtime_col1:
@@ -725,7 +714,7 @@ def render_pod_v2_tab(username: str, password: str, pin: str) -> None:
                 start_date=start_date,
                 end_date=end_date,
                 batch_days=int(batch_days),
-                output_dir=Path(output_dir),
+                output_dir=output_dir,
                 timeout=int(timeout_seconds),
                 max_retries=int(retry_count),
                 poll_interval=int(poll_interval),
@@ -749,6 +738,7 @@ def render_pod_by_awb_tab(username: str, password: str, pin: str) -> None:
     if not meta:
         st.info("Klik `Load Filters` di sidebar untuk memuat pilihan filter POD BY AWB dari website.")
         return
+    output_dir = internal_output_dir("pod_by_awb")
 
     key_value = select_value("Dasar Pencarian", meta["key"], "pod_by_awb_key")
     awb_text = st.text_area(
@@ -769,12 +759,6 @@ def render_pod_by_awb_tab(username: str, password: str, pin: str) -> None:
     with col4:
         max_workers = st.number_input("Parallel workers", min_value=1, max_value=12, value=DEFAULT_MAX_WORKERS, step=1, key="pod_by_awb_max_workers")
 
-    output_dir = st.text_input(
-        "Output Folder",
-        value=str(PROJECT_ROOT / "downloads" / "pod_by_awb"),
-        key="pod_by_awb_output_dir",
-    )
-
     if st.button("Execute POD BY AWB Export", type="primary"):
         overall_text = st.empty()
         overall_bar = st.progress(0.0)
@@ -788,7 +772,7 @@ def render_pod_by_awb_tab(username: str, password: str, pin: str) -> None:
                 session=session,
                 key=key_value,
                 raw_awbs=awb_text,
-                output_dir=Path(output_dir),
+                output_dir=output_dir,
                 awb_per_file=int(awb_per_file),
                 timeout=int(timeout_seconds),
                 max_retries=int(retry_count),
