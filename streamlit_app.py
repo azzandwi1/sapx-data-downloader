@@ -684,8 +684,11 @@ def render_monitoring_gateway_tab(username: str, password: str, pin: str) -> Non
                 max_workers=int(max_workers),
                 progress_callback=progress_callback,
             )
-            downloaded_count = sum(result.downloaded_file_count for result in results)
-            failed_count = sum(result.failed_file_count for result in results)
+            downloaded_count = sum(
+                getattr(result, "downloaded_file_count", getattr(result, "daily_file_count", 0))
+                for result in results
+            )
+            failed_count = sum(getattr(result, "failed_file_count", 0) for result in results)
             if failed_count:
                 st.warning(f"Selesai sebagian. {downloaded_count} file berhasil, {failed_count} file gagal. Cek kolom errors_path untuk retry.")
             else:
