@@ -42,6 +42,9 @@ class BatchDownloadResult:
     output_dir: str
     manifest_path: str
     daily_file_count: int
+    downloaded_file_count: int = 0
+    failed_file_count: int = 0
+    errors_path: str = ""
 
 
 def fetch_monitoring_gateway_html(session: requests.Session, timeout: int = 60) -> str:
@@ -513,34 +516,60 @@ def run_monitoring_gateway_batches(
                 for file_index, export in enumerate(exports, start=1)
             }
             completed_files = 0
+            failed_files: list[str] = []
             for future in as_completed(future_map):
                 file_index, _export = future_map[future]
-                path = future.result()
-                completed_files += 1
-                file_size = path.stat().st_size if path.exists() else 0
-                _emit(
-                    progress_callback,
-                    {
-                        "stage": "file",
-                        "chunk_index": chunk_index,
-                        "chunk_total": len(chunks),
-                        "file_index": completed_files,
-                        "file_total": len(exports),
-                        "file_name": path.name,
-                        "downloaded_bytes": file_size,
-                        "total_bytes": file_size,
-                        "speed_text": "parallel",
-                    },
-                )
+                try:
+                    path = future.result()
+                    completed_files += 1
+                    file_size = path.stat().st_size if path.exists() else 0
+                    _emit(
+                        progress_callback,
+                        {
+                            "stage": "file",
+                            "chunk_index": chunk_index,
+                            "chunk_total": len(chunks),
+                            "file_index": completed_files,
+                            "file_total": len(exports),
+                            "file_name": path.name,
+                            "downloaded_bytes": file_size,
+                            "total_bytes": file_size,
+                            "speed_text": "parallel",
+                        },
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    failed_files.append(f"{_export.date_iso}\t{_export.url}\t{exc}")
+                    _emit(
+                        progress_callback,
+                        {
+                            "stage": "retry",
+                            "chunk_index": chunk_index,
+                            "chunk_total": len(chunks),
+                            "file_index": file_index,
+                            "file_total": len(exports),
+                            "file_name": f"awb_scan_incoming_{_export.date_iso}.xlsx",
+                            "attempt": max_retries,
+                            "max_retries": max_retries,
+                            "message": f"Gagal download {_export.date_iso}: {exc}",
+                        },
+                    )
                 _emit(
                     progress_callback,
                     {
                         "stage": "overall",
                         "chunk_index": chunk_index,
                         "chunk_total": len(chunks),
-                        "label": f"Batch {chunk_index}/{len(chunks)} | file selesai {completed_files}/{len(exports)}",
+                        "label": (
+                            f"Batch {chunk_index}/{len(chunks)} | "
+                            f"sukses {completed_files}/{len(exports)} | gagal {len(failed_files)}"
+                        ),
                     },
                 )
+        errors_path = out_dir / "errors.txt"
+        if failed_files:
+            errors_path.write_text("\n".join(failed_files) + "\n", encoding="utf-8")
+        else:
+            errors_path.unlink(missing_ok=True)
 
         results.append(
             BatchDownloadResult(
@@ -551,6 +580,9 @@ def run_monitoring_gateway_batches(
                 output_dir=str(out_dir),
                 manifest_path=str(manifest_path),
                 daily_file_count=len(exports),
+                downloaded_file_count=completed_files,
+                failed_file_count=len(failed_files),
+                errors_path=str(errors_path) if failed_files else "",
             )
         )
     return results

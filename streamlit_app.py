@@ -627,22 +627,20 @@ def render_pickup_manual_tab(username: str, password: str, pin: str) -> None:
 
 def render_monitoring_gateway_tab(username: str, password: str, pin: str) -> None:
     st.subheader("Monitoring Proses Operational > Laporan Monitoring Proses")
-    st.caption("Filter tab ini mengikuti form web aslinya, lalu range besar akan dipecah otomatis per batch N hari.")
+    st.caption("Filter mengikuti form web asli. Range tanggal dikirim sekali, lalu semua link export harian yang muncul akan diunduh.")
     meta = st.session_state.get("gateway_filters_meta")
     if not meta:
         st.info("Klik `Load Filters` di sidebar untuk memuat pilihan Check Point dan Cabang dari website.")
         return
     output_dir = internal_output_dir("monitoring_gateway")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
         checkpoint = select_value("Check Point", meta["checkpoints"], "gateway_checkpoint")
         branch = select_value("Cabang", meta["branches"], "gateway_branch")
     with col2:
         from_time = st.text_input("Dari Jam", value="00:00:00", key="gateway_from_time")
         to_time = st.text_input("Sampai Jam", value="23:59:59", key="gateway_to_time")
-    with col3:
-        batch_days = st.number_input("Batch per berapa hari", min_value=1, value=5, step=1, key="gateway_batch_days")
     date_col1, date_col2, date_col3 = st.columns(3)
     with date_col1:
         start_date = st.date_input("From", value=date.today(), key="gateway_from")
@@ -678,7 +676,7 @@ def render_monitoring_gateway_tab(username: str, password: str, pin: str) -> Non
                 to_time=to_time.strip() or "23:59:59",
                 start_date=start_date,
                 end_date=end_date,
-                batch_days=int(batch_days),
+                batch_days=max(1, (end_date - start_date).days + 1),
                 output_root=output_dir,
                 timeout=int(timeout_seconds),
                 skip_existing=skip_existing,
@@ -686,7 +684,12 @@ def render_monitoring_gateway_tab(username: str, password: str, pin: str) -> Non
                 max_workers=int(max_workers),
                 progress_callback=progress_callback,
             )
-            st.success(f"Selesai. {len(results)} batch berhasil diproses.")
+            downloaded_count = sum(result.downloaded_file_count for result in results)
+            failed_count = sum(result.failed_file_count for result in results)
+            if failed_count:
+                st.warning(f"Selesai sebagian. {downloaded_count} file berhasil, {failed_count} file gagal. Cek kolom errors_path untuk retry.")
+            else:
+                st.success(f"Selesai. {downloaded_count} file harian berhasil diunduh.")
             st.session_state["download_results"]["monitoring_gateway"] = [
                 str(path) for path in collect_monitoring_gateway_paths(results)
             ]
