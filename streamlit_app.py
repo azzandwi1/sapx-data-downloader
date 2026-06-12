@@ -655,7 +655,15 @@ def render_monitoring_gateway_tab(username: str, password: str, pin: str) -> Non
     with runtime_col2:
         retry_count = st.number_input("Retry saat timeout", min_value=1, value=3, step=1, key="gateway_retries")
     with runtime_col3:
-        max_workers = st.number_input("Parallel workers", min_value=1, max_value=12, value=DEFAULT_MAX_WORKERS, step=1, key="gateway_max_workers")
+        max_workers = st.number_input(
+            "Parallel workers",
+            min_value=1,
+            max_value=12,
+            value=1,
+            step=1,
+            key="gateway_max_workers",
+            help="Endpoint Monitoring Proses sering timeout saat paralel. Default 1 paling stabil; naikkan hanya jika server sedang responsif.",
+        )
 
     if st.button("Execute Monitoring Proses Export", type="primary"):
         cleanup_output_dir(output_dir)

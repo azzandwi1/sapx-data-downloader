@@ -262,6 +262,14 @@ def iter_content(response: requests.Response, chunk_size: int = 1024 * 1024) -> 
             yield chunk
 
 
+def validate_xlsx_file(path: Path) -> None:
+    with path.open("rb") as file_handle:
+        signature = file_handle.read(4)
+    if not signature.startswith(b"PK"):
+        preview = path.read_bytes()[:120].decode("utf-8", errors="ignore").replace("\n", " ").strip()
+        raise RuntimeError(f"Response bukan file XLSX valid. Preview: {preview}")
+
+
 def parse_date_string(value: str) -> date:
     return datetime.strptime(value, "%d-%m-%Y").date()
 
@@ -386,6 +394,9 @@ def _download_export_with_callback(
         try:
             with session.get(export.url, stream=True, timeout=(30, timeout)) as response:
                 response.raise_for_status()
+                content_type = response.headers.get("Content-Type", "")
+                if "text/html" in content_type.lower():
+                    raise RuntimeError(f"Response bukan file Excel: {content_type}")
                 total_bytes = int(response.headers.get("Content-Length", "0")) or None
                 downloaded_bytes = 0
                 started_at = time.monotonic()
@@ -412,8 +423,9 @@ def _download_export_with_callback(
                                 "max_retries": max_retries,
                             },
                         )
+                validate_xlsx_file(out_path)
             return out_path
-        except (requests.Timeout, requests.ConnectionError) as exc:
+        except (requests.Timeout, requests.ConnectionError, requests.HTTPError, RuntimeError) as exc:
             last_error = exc
             if out_path.exists():
                 out_path.unlink(missing_ok=True)
