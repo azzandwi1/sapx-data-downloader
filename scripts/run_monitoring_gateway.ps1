@@ -4,6 +4,11 @@ param(
     [int]$Year,
     [int]$Month,
     [string]$Branch = "NASIONAL",
+    [string]$OutDir,
+    [int]$Timeout = 2700,
+    [int]$MaxRetries = 3,
+    [int]$RetryDelay = 5,
+    [int]$MaxWorkers = 1,
     [switch]$SkipExisting
 )
 
@@ -23,6 +28,13 @@ if ($FromDate -and $ToDate) {
 }
 
 $argsList += "--branch", $Branch
+$argsList += "--timeout", $Timeout
+$argsList += "--max-retries", $MaxRetries
+$argsList += "--retry-delay", $RetryDelay
+$argsList += "--max-workers", $MaxWorkers
+if ($OutDir) {
+    $argsList += "--out-dir", $OutDir
+}
 if ($SkipExisting) {
     $argsList += "--skip-existing"
 }
@@ -33,4 +45,3 @@ try {
 } finally {
     Pop-Location
 }
-

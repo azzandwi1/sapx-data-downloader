@@ -148,6 +148,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    parser.add_argument("--max-retries", type=int, default=3)
+    parser.add_argument("--retry-delay", type=int, default=5)
+    parser.add_argument("--max-workers", type=int, default=1)
     return parser
 
 
@@ -619,40 +622,36 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         login(session, args.username, args.password, args.pin, args.timeout)
-        html = fetch_report_page(
+        start_date = parse_date_string(date_from)
+        end_date = parse_date_string(date_to)
+        results = run_monitoring_gateway_batches(
             session=session,
             checkpoint=args.checkpoint,
-            date_from=date_from,
-            date_to=date_to,
+            branch=args.branch,
             from_time=args.from_time,
             to_time=args.to_time,
-            branch=args.branch,
+            start_date=start_date,
+            end_date=end_date,
+            batch_days=max(1, (end_date - start_date).days + 1),
+            output_root=out_dir,
             timeout=args.timeout,
+            skip_existing=args.skip_existing,
+            max_retries=args.max_retries,
+            retry_delay=args.retry_delay,
+            max_workers=args.max_workers,
         )
-        exports = extract_daily_exports(html)
-        if not exports:
+        downloaded_count = sum(item.downloaded_file_count for item in results)
+        failed_count = sum(item.failed_file_count for item in results)
+        expected_count = sum(item.daily_file_count for item in results)
+        if not expected_count:
             print("No daily export links found in report page.", file=sys.stderr)
             return 2
-
-        manifest_path = out_dir / "manifest.txt"
-        manifest_path.write_text(
-            "\n".join(f"{item.date_iso}\t{item.url}" for item in exports) + "\n",
-            encoding="utf-8",
-        )
-
-        print(f"Found {len(exports)} daily export link(s) for {date_from} to {date_to}.")
-        print_progress("overall", 0, len(exports))
-        for index, export in enumerate(exports, start=1):
-            download_export(
-                session,
-                export,
-                out_dir,
-                args.timeout,
-                args.skip_existing,
-                index,
-                len(exports),
-            )
-        print(f"Done. Files saved in: {out_dir}")
+        print(f"Done. {downloaded_count}/{expected_count} file(s) saved in: {out_dir}")
+        if failed_count:
+            for result in results:
+                if result.errors_path:
+                    print(f"Errors: {result.errors_path}", file=sys.stderr)
+            return 3
         return 0
     except (requests.RequestException, LoginError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

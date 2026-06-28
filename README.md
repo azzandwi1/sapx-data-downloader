@@ -70,6 +70,14 @@ Catatan login UI:
 
 ## Menjalankan CLI Monitoring Gateway
 
+Untuk download besar, gunakan mode CLI lokal. Mode ini menyimpan file langsung ke folder lokal per tanggal/batch, jadi tidak bergantung pada session Streamlit Cloud dan tidak perlu klik tombol `Download`.
+
+Alasan:
+
+- Browser tidak mengizinkan aplikasi cloud memaksa file otomatis tersimpan ke komputer user tanpa interaksi download.
+- Streamlit Cloud punya disk dan session terbatas.
+- Data multi-GB lebih stabil jika worker berjalan di laptop/VPS lokal dan langsung menulis ke disk.
+
 Untuk mode CLI, kredensial tetap bisa diberikan lewat environment variable atau argumen command line.
 
 Environment variable yang didukung:
@@ -89,21 +97,46 @@ CORESYS_PIN=123456
 Contoh range manual:
 
 ```powershell
+set PYTHONPATH=D:\SAPX\Data Analisis\DATA DOWNLOADER\src
 python -m sapx_downloader `
   --from-date 01-06-2026 `
   --to-date 07-06-2026 `
-  --branch NASIONAL
+  --branch NASIONAL `
+  --timeout 2700 `
+  --max-retries 3 `
+  --max-workers 1 `
+  --out-dir "D:\SAPX\Data Analisis\HASIL DOWNLOAD\monitoring_juni"
 ```
 
 Contoh full bulan:
 
 ```powershell
+set PYTHONPATH=D:\SAPX\Data Analisis\DATA DOWNLOADER\src
 python -m sapx_downloader `
   --year 2026 `
   --month 6 `
   --branch NASIONAL `
-  --skip-existing
+  --skip-existing `
+  --timeout 2700 `
+  --max-retries 3 `
+  --max-workers 1
 ```
+
+Contoh lewat PowerShell helper:
+
+```powershell
+.\scripts\run_monitoring_gateway.ps1 `
+  -FromDate 01-06-2026 `
+  -ToDate 30-06-2026 `
+  -Branch NASIONAL `
+  -OutDir "D:\SAPX\Data Analisis\HASIL DOWNLOAD\monitoring_juni" `
+  -Timeout 2700 `
+  -MaxRetries 3 `
+  -MaxWorkers 1 `
+  -SkipExisting
+```
+
+Gunakan `-MaxWorkers 1` untuk Monitoring Proses jika server SAPX sering timeout. Naikkan ke `2-4` hanya jika endpoint sedang stabil.
 
 ## Catatan
 
